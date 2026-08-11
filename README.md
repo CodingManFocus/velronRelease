@@ -1,2 +1,3 @@
 # velronRelease
-Private mirror of Velron GitHub Releases.
+
+try velron
