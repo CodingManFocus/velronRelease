@@ -1,31 +1,30 @@
-Velron Non-Commercial License
-Version 1.0
+Velron Non-Commercial Use License
+Version 1.1
 
 Copyright (c) 2026 CodingManFocus. All rights reserved.
 
 1. Definitions
 
 "Software" means Velron and all source code, object code, executable files,
-documentation, and other materials distributed with or under this License,
-including modified versions and derivative works.
+documentation, assets, and other materials distributed with or under this
+License.
 
 "Licensor" means CodingManFocus, the owner of the Software, or any successor
 copyright holder authorized to license the Software.
+
+"Official Distribution Source" means a website, repository, release page, or
+other distribution channel expressly operated or authorized by the Licensor.
 
 "Commercial Use" means any use of the Software that is primarily intended for
 or directed toward commercial advantage, business operations, or monetary
 compensation. Commercial Use includes, without limitation:
 
-(a) selling, licensing, renting, or otherwise charging for the Software or
-    access to it;
-(b) incorporating the Software into a paid product, service, subscription, or
-    hosted offering;
-(c) using the Software to provide services to customers or other third parties
-    for compensation;
-(d) using the Software internally for the operation, development, or support
-    of a for-profit business; or
-(e) distributing the Software in exchange for payment or another commercial
-    benefit.
+(a) using the Software internally for the operation, development, or support
+    of a for-profit business;
+(b) using the Software to provide services to customers or other third parties;
+(c) incorporating the Software into a paid product, service, subscription, or
+    hosted offering; or
+(d) selling, licensing, renting, or charging for the Software or access to it.
 
 Receiving voluntary donations that are not required for access to the Software
 does not, by itself, constitute Commercial Use.
@@ -34,76 +33,100 @@ does not, by itself, constitute Commercial Use.
 issued by the Licensor that expressly authorizes Commercial Use of the Software
 within the scope stated in that license.
 
-2. Non-Commercial License Grant
+2. Limited Non-Commercial Use Grant
 
-Subject to the terms of this License, the Licensor grants you a worldwide,
-non-exclusive, royalty-free right to use, copy, modify, create derivative works
-of, and redistribute the Software solely for Non-Commercial Use.
+Subject to this License, the Licensor grants you a personal, worldwide,
+non-exclusive, non-transferable, royalty-free right to download the Software
+from an Official Distribution Source and install and run the Software, without
+modification, solely for Non-Commercial Use.
 
-3. Commercial Use Restriction
+No rights are granted except those expressly stated in this section.
+
+3. Prohibited Activities
+
+Unless the Licensor gives you prior written permission or a separate Velron
+license expressly permits the activity, you may not:
+
+(a) copy or reproduce the Software, in whole or in part, except for temporary,
+    incidental, or technical copies created automatically and strictly
+    necessary to download, install, or run the Software as permitted by this
+    License;
+
+(b) distribute, redistribute, publish, sublicense, sell, rent, lease, lend,
+    host, mirror, upload, transmit, transfer, or otherwise make the Software or
+    any copy of it available to any other person or entity, whether for payment
+    or free of charge;
+
+(c) modify, patch, adapt, translate, alter, merge, build upon, or create any
+    derivative work based on the Software;
+
+(d) reverse engineer, decompile, disassemble, or otherwise attempt to derive
+    source code from the Software, except only to the extent that applicable
+    law expressly prohibits this restriction; or
+
+(e) remove, obscure, or alter any copyright, license, attribution, trademark,
+    or other proprietary notice contained in the Software.
+
+For clarity, publishing the Software on another website, repository, archive,
+package registry, file-sharing service, or download mirror is prohibited,
+including when the Software is unmodified and provided without charge.
+
+4. Commercial Use Restriction
 
 You may not make any Commercial Use of the Software unless you have either:
 
 (a) received prior written permission from the Licensor; or
 (b) obtained a valid Velron Commercial License covering that Commercial Use.
 
-Any Commercial Use is governed by the separate permission or Velron Commercial
-License. If its terms conflict with this License, the separate commercial terms
-control only for the Commercial Use they expressly cover.
+Commercial permission does not authorize copying, modification, redistribution,
+or any other activity prohibited by Section 3 unless the written permission or
+Velron Commercial License expressly authorizes that specific activity.
 
-4. Redistribution Conditions
+5. No Implied Permission
 
-Any copy or redistribution of the Software, whether modified or unmodified,
-must:
+The Software's public availability, including its availability in a public
+repository or release page, does not grant any right to copy, modify,
+redistribute, or commercially use it. No permission may be inferred from the
+Licensor's failure to enforce a restriction in a particular instance.
 
-(a) include this License and all existing copyright notices;
-(b) clearly state any significant modifications you made; and
-(c) remain subject to this License unless the Licensor has authorized otherwise
-    in writing.
-
-You may not impose terms that purport to permit Commercial Use of the Software
-without the Licensor's authorization.
-
-5. Ownership and Reserved Rights
+6. Ownership and Reserved Rights
 
 The Software is licensed, not sold. The Licensor retains all right, title, and
-interest in and to the Software. No rights are granted except those expressly
-stated in this License.
+interest in and to the Software. All rights not expressly granted by this
+License are reserved.
 
 This License does not grant permission to use the names, logos, trademarks, or
-branding of Velron or CodingManFocus except as reasonably necessary to describe
-the origin of the Software and reproduce required notices.
+branding of Velron or CodingManFocus except as reasonably necessary to identify
+the Software and reproduce required notices.
 
-6. Termination
+7. Termination
 
-Your rights under this License terminate automatically if you violate any of
-its terms. If the violation is curable, your rights are reinstated
-automatically when you cure the violation within 30 days after becoming aware
-of it. Repeated or deliberate violations are not subject to automatic
-reinstatement. After termination, you must stop using and distributing the
-Software unless the Licensor provides written authorization.
+Your rights under this License terminate automatically and immediately if you
+violate any term of this License. Upon termination, you must stop using the
+Software and delete all copies in your possession or control. Your rights may
+be reinstated only by the Licensor's express written permission.
 
-7. Disclaimer of Warranty
+8. Disclaimer of Warranty
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT. YOU USE THE
 SOFTWARE AT YOUR OWN RISK.
 
-8. Limitation of Liability
+9. Limitation of Liability
 
 TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE LICENSOR SHALL NOT BE LIABLE FOR
 ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT, OR
 OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE
 OF OR OTHER DEALINGS IN THE SOFTWARE.
 
-9. Severability
+10. Severability
 
 If any provision of this License is held unenforceable, the remaining
 provisions remain in effect, and the unenforceable provision shall be modified
 only to the minimum extent necessary to make it enforceable.
 
-10. Commercial Licensing
+11. Licensing and Permissions
 
 To request written permission or obtain a Velron Commercial License, contact
 the Licensor through an official contact method published by Velron or
