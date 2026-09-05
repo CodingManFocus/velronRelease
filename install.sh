@@ -358,6 +358,8 @@ if [ "$installClient" = "true" ] && { [ "$customVcp" = "true" ] || [ "$dataDir" 
 exec '$clientPath' "\$@"
 EOF
   chmod 700 "$clientCommand"
+elif [ "$installClient" = "true" ]; then
+  rm -f -- "$dataDir/client.env" "$installDir/velron-client-connect"
 fi
 
 patchPluginCommand() {
@@ -377,14 +379,15 @@ if [ "$installClient" = "true" ] && [ "$setupHostPlugins" = "true" ]; then
   info "Generating a pinned Velron plugin…"
   if VELRON_HOME="$dataDir" "$clientPath" setup-plugin --client-path "$clientPath" >/dev/null 2>&1; then :
   elif [ -f "$pluginDir/.velron-generated.json" ]; then
-    warn "An existing generated plugin was kept. Its pinned Client path must still be $clientPath."
+    if ! grep -F "\"clientExecutablePath\": \"$clientPath\"" "$pluginDir/.velron-generated.json" >/dev/null 2>&1; then
+      fail "The existing plugin pins a different Client path. Review or move $marketplaceDir, then rerun setup."
+    fi
+    warn "The existing generated plugin was refreshed."
   else
     fail "Plugin generation failed. Review or move the existing $marketplaceDir directory, then rerun setup."
   fi
-  if [ "$clientCommand" != "$clientPath" ]; then
-    patchPluginCommand "$pluginDir/.mcp.json" "$clientCommand"
-    patchPluginCommand "$pluginDir/.codex-plugin/plugin.json" "$clientCommand"
-  fi
+  patchPluginCommand "$pluginDir/.mcp.json" "$clientCommand"
+  patchPluginCommand "$pluginDir/.codex-plugin/plugin.json" "$clientCommand"
 fi
 
 installCodexPlugin() {

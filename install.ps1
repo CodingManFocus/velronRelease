@@ -395,8 +395,13 @@ if ($installClientComponent -and $setupHostPlugins) {
         & $clientPath setup-plugin --client-path $clientPath | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "setup-plugin exited with $LASTEXITCODE" }
     } catch {
-        if (Test-Path -LiteralPath (Join-Path $pluginDir '.velron-generated.json') -PathType Leaf) {
-            Write-WarningMessage "An existing generated plugin was kept. Its pinned Client path must still be $clientPath."
+        $generatedMarkerPath = Join-Path $pluginDir '.velron-generated.json'
+        if (Test-Path -LiteralPath $generatedMarkerPath -PathType Leaf) {
+            $pinnedPath = [string](Get-Content -Raw -LiteralPath $generatedMarkerPath | ConvertFrom-Json).clientExecutablePath
+            if ($pinnedPath -ne $clientPath) {
+                Stop-Setup "The existing plugin pins a different Client path. Review or move $marketplaceDir, then rerun setup."
+            }
+            Write-WarningMessage 'The existing generated plugin was refreshed.'
         } else {
             Stop-Setup "Plugin generation failed. Review or move $marketplaceDir and rerun setup. $($_.Exception.Message)"
         }
