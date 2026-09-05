@@ -1,8 +1,10 @@
-# Velron Release
+# Velron
 
-Standalone Velron Server and Client releases for Windows, macOS, and Linux.
+Velron is distributed as separate Server and Client executables for Windows, macOS, and Linux.
+The interactive installer downloads the correct release for the current OS and CPU architecture,
+verifies its SHA-256 checksum, and walks through the initial setup.
 
-## One-line installation
+## One-line install
 
 ### Windows (PowerShell)
 
@@ -16,20 +18,48 @@ irm https://raw.githubusercontent.com/CodingManFocus/velronRelease/main/install.
 curl -fsSL https://raw.githubusercontent.com/CodingManFocus/velronRelease/main/install.sh | sh
 ```
 
-The interactive setup wizard lets you:
+Both commands open an interactive terminal wizard. It lets you:
 
-- install Server, Client, or both;
-- configure the Server ports and optional login startup;
-- use automatic local VCP discovery or enter a remote `wss://.../vcp/v1` endpoint;
-- install the generated Client plugin into Codex, Claude Code, or both;
-- create a ready-to-copy stdio MCP configuration for another host and a fixed workspace;
-- add stable `velron` and `velron-client` commands to your user `PATH`;
-- verify every downloaded executable against the release SHA-256 manifest.
+- install Velron Server, Velron Client, or both;
+- choose the Velron data directory and command directory;
+- configure the Server bind host, management port, pinned local VCP port, and allowed hosts;
+- view or replace the Client VCP URL and securely enter the token required by a remote Server;
+- install the generated Velron plugin for Codex, Claude Code, or both;
+- generate a generic stdio MCP configuration for another host and restrict it to a selected workspace;
+- add `velron` and `velron-client` to the user `PATH`;
+- register Velron Server to start when the user signs in, and optionally start it immediately.
 
-Run `install.sh --help` or download `install.ps1` and run `Get-Help ./install.ps1 -Detailed` for automation options.
+The default Client endpoint shown by the wizard is
+`wss://127.0.0.1:4143/vcp/v1`. Accepting it keeps automatic local discovery enabled: Client reads
+the active port, access token, and pinned CA from the shared Velron data directory. A custom remote
+URL must use `wss://`, must end in `/vcp/v1`, and requires a VCP access token.
 
-> The one-line commands require this release repository to be public. Until then, download the scripts with an authenticated GitHub client; `GITHUB_TOKEN` is also supported for private release-asset downloads.
+## Default locations
 
-## License
+| Platform | Commands | Runtime binaries | Data and configuration |
+| --- | --- | --- | --- |
+| Windows | `%LOCALAPPDATA%\Programs\Velron\bin` | Same as commands | `%USERPROFILE%\.velron` |
+| macOS/Linux | `~/.local/bin` | `~/.local/share/velron/bin` | `~/.velron` |
 
-See [LICENSE](LICENSE) before using Velron. Public download availability does not grant commercial-use rights.
+All locations can be changed in the wizard where doing so is safe. The Server startup registration
+uses a per-user Startup shortcut on Windows, a LaunchAgent on macOS, and a systemd user service
+(or desktop autostart fallback) on Linux.
+
+## Plugin security step
+
+The installer asks Velron Client to generate a local marketplace whose MCP command and
+`PreToolUse` Hook pin the installed Client by absolute path. After installing for Codex, start a
+new Codex session, open `/hooks`, confirm the absolute path, and trust the generated Hook. Until it
+is trusted, pathless Agents still work, while workspace-enabled VCP Agents fail safely with
+`vcp_context_required`.
+
+If the selected Codex or Claude Code CLI is not on `PATH`, installation still succeeds and the
+wizard prints the exact plugin registration commands to run later.
+
+## Manual downloads
+
+Every GitHub Release contains Server and Client builds for Windows, macOS, and Linux on x64 and
+arm64, plus `SHA256SUMS.txt`. Downloads are available from the
+[latest release](https://github.com/CodingManFocus/velronRelease/releases/latest).
+
+Use is subject to the terms in [LICENSE](LICENSE).

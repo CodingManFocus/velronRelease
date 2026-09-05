@@ -1,542 +1,622 @@
 #!/usr/bin/env sh
 set -eu
 
-repo="CodingManFocus/velronRelease"
-releaseBase="https://github.com/$repo/releases/latest/download"
-defaultVcpPort="4143"
-components=""
-clientTarget=""
-vcpUrl=""
-vcpToken=""
-workspaceRoot=""
-serverHost=""
-serverPort=""
-localVcpPort=""
-installDir="${VELRON_INSTALL_DIR:-$HOME/.local/bin}"
-defaultDataDir="$HOME/.velron"
-dataDir="${VELRON_HOME:-$defaultDataDir}"
-autoStart=""
-startServer=""
-openDashboard=""
-assumeYes="false"
+REPOSITORY="CodingManFocus/velronRelease"
+LATEST_BASE_URL="https://github.com/$REPOSITORY/releases/latest/download"
+DEFAULT_HTTP_PORT="4141"
+DEFAULT_VCP_PORT="4143"
 
-if [ -t 1 ]; then
-  cyan='\033[36m'; green='\033[32m'; yellow='\033[33m'; red='\033[31m'; dim='\033[2m'; reset='\033[0m'
+if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+  TTY=/dev/tty
 else
-  cyan=''; green=''; yellow=''; red=''; dim=''; reset=''
+  printf '%s\n' "Velron installer requires an interactive terminal." >&2
+  exit 1
 fi
-singleQuote="'"
+
+if [ -t 1 ] && [ "${NO_COLOR:-}" = "" ]; then
+  BLUE='\033[1;34m'
+  GREEN='\033[1;32m'
+  YELLOW='\033[1;33m'
+  RED='\033[1;31m'
+  BOLD='\033[1m'
+  RESET='\033[0m'
+else
+  BLUE=''
+  GREEN=''
+  YELLOW=''
+  RED=''
+  BOLD=''
+  RESET=''
+fi
 
 say() { printf '%b\n' "$*"; }
-info() { say "${cyan}◆${reset} $*"; }
-ok() { say "${green}✓${reset} $*"; }
-warn() { say "${yellow}!${reset} $*"; }
-fail() { say "${red}Error:${reset} $*" >&2; exit 1; }
+info() { say "${BLUE}i${RESET} $*"; }
+success() { say "${GREEN}✓${RESET} $*"; }
+warn() { say "${YELLOW}!${RESET} $*"; }
+die() { say "${RED}Error:${RESET} $*" >&2; exit 1; }
 
-usage() {
-  cat <<'EOF'
-Velron installer
-
-Usage:
-  install.sh [options]
-
-Options:
-  --components server|client|all
-  --client-target codex|claude|both|other|none
-  --vcp-url URL              Default: automatic local VCP discovery
-  --vcp-token TOKEN          Required with a custom VCP URL
-  --workspace PATH           Fixed workspace for --client-target other
-  --install-dir PATH
-  --server-host HOST         Default: 127.0.0.1
-  --server-port PORT         Default: 4141
-  --local-vcp-port PORT      Default: 4143
-  --autostart yes|no
-  --start-server yes|no
-  --open-dashboard yes|no
-  --yes                      Accept recommended defaults
-  --help
-
-Example:
-  curl -fsSL https://raw.githubusercontent.com/CodingManFocus/velronRelease/main/install.sh | sh
-EOF
+prompt() {
+  prompt_label=$1
+  prompt_default=${2-}
+  if [ -n "$prompt_default" ]; then
+    printf '%b' "${BOLD}$prompt_label${RESET} [$prompt_default]: " >"$TTY"
+  else
+    printf '%b' "${BOLD}$prompt_label${RESET}: " >"$TTY"
+  fi
+  IFS= read -r prompt_answer <"$TTY" || die "Input was cancelled."
+  if [ -z "$prompt_answer" ]; then
+    prompt_answer=$prompt_default
+  fi
+  printf '%s' "$prompt_answer"
 }
 
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --components) components=${2-}; shift 2 ;;
-    --client-target) clientTarget=${2-}; shift 2 ;;
-    --vcp-url) vcpUrl=${2-}; shift 2 ;;
-    --vcp-token) vcpToken=${2-}; shift 2 ;;
-    --workspace) workspaceRoot=${2-}; shift 2 ;;
-    --install-dir) installDir=${2-}; shift 2 ;;
-    --server-host) serverHost=${2-}; shift 2 ;;
-    --server-port) serverPort=${2-}; shift 2 ;;
-    --local-vcp-port) localVcpPort=${2-}; shift 2 ;;
-    --autostart) autoStart=${2-}; shift 2 ;;
-    --start-server) startServer=${2-}; shift 2 ;;
-    --open-dashboard) openDashboard=${2-}; shift 2 ;;
-    --yes|-y) assumeYes="true"; shift ;;
-    --help|-h) usage; exit 0 ;;
-    *) fail "Unknown option: $1" ;;
-  esac
-done
-
-readAnswer() {
-  prompt=$1
-  if [ ! -r /dev/tty ]; then fail "Interactive input needs a terminal. Use --yes and explicit options."; fi
-  printf '%b' "$prompt" >/dev/tty
-  IFS= read -r answer </dev/tty || fail "Input was cancelled."
-  printf '%s' "$answer"
+secret_prompt() {
+  secret_label=$1
+  printf '%b' "${BOLD}$secret_label${RESET}: " >"$TTY"
+  stty -echo <"$TTY" 2>/dev/null || true
+  IFS= read -r secret_answer <"$TTY" || {
+    stty echo <"$TTY" 2>/dev/null || true
+    die "Input was cancelled."
+  }
+  stty echo <"$TTY" 2>/dev/null || true
+  printf '\n' >"$TTY"
+  printf '%s' "$secret_answer"
 }
 
-promptDefault() {
-  label=$1; defaultValue=$2
-  answer=$(readAnswer "$label ${dim}[$defaultValue]${reset}: ")
-  if [ -z "$answer" ]; then answer=$defaultValue; fi
-  printf '%s' "$answer"
-}
-
-promptSecret() {
-  label=$1
-  [ -r /dev/tty ] || fail "A VCP token is required. Pass --vcp-token in non-interactive mode."
-  printf '%b' "$label: " >/dev/tty
-  stty -echo </dev/tty 2>/dev/null || true
-  IFS= read -r answer </dev/tty || { stty echo </dev/tty 2>/dev/null || true; fail "Input was cancelled."; }
-  stty echo </dev/tty 2>/dev/null || true
-  printf '\n' >/dev/tty
-  printf '%s' "$answer"
-}
-
-choose() {
-  title=$1; defaultChoice=$2
-  shift 2
-  printf '%b\n' "\n${cyan}$title${reset}" >/dev/tty
-  index=1
-  for option in "$@"; do printf '%s\n' "  $index) $option" >/dev/tty; index=$((index + 1)); done
+menu() {
+  menu_title=$1
+  shift
+  say "" >"$TTY"
+  say "${BOLD}$menu_title${RESET}" >"$TTY"
+  menu_index=1
+  for menu_item in "$@"; do
+    say "  ${BLUE}$menu_index)${RESET} $menu_item" >"$TTY"
+    menu_index=$((menu_index + 1))
+  done
   while :; do
-    answer=$(readAnswer "Choose ${dim}[$defaultChoice]${reset}: ")
-    [ -n "$answer" ] || answer=$defaultChoice
-    case "$answer" in *[!0-9]*|'') printf '%s\n' "! Enter a number." >/dev/tty ;; *)
-      if [ "$answer" -ge 1 ] 2>/dev/null && [ "$answer" -lt "$index" ]; then printf '%s' "$answer"; return; fi
-      printf '%s\n' "! Choose a listed option." >/dev/tty ;;
+    printf '%b' "${BOLD}Select${RESET} [1]: " >"$TTY"
+    IFS= read -r menu_choice <"$TTY" || die "Input was cancelled."
+    menu_choice=${menu_choice:-1}
+    case "$menu_choice" in
+      ''|*[!0-9]*) warn "Enter a number from 1 to $#." >"$TTY" ;;
+      *) [ "$menu_choice" -ge 1 ] 2>/dev/null && [ "$menu_choice" -le "$#" ] 2>/dev/null && {
+           printf '%s' "$menu_choice"
+           return
+         }
+         warn "Enter a number from 1 to $#." >"$TTY" ;;
     esac
   done
 }
 
-askYesNo() {
-  label=$1; defaultValue=$2
-  if [ "$assumeYes" = "true" ]; then printf '%s' "$defaultValue"; return; fi
-  suffix="y/N"; [ "$defaultValue" = "yes" ] && suffix="Y/n"
+confirm() {
+  confirm_label=$1
+  confirm_default=${2:-yes}
+  if [ "$confirm_default" = yes ]; then
+    confirm_hint="Y/n"
+  else
+    confirm_hint="y/N"
+  fi
   while :; do
-    answer=$(readAnswer "$label ${dim}[$suffix]${reset}: ")
-    [ -n "$answer" ] || answer=$defaultValue
-    case "$answer" in y|Y|yes|YES) printf 'yes'; return ;; n|N|no|NO) printf 'no'; return ;; *) printf '%s\n' "! Enter y or n." >/dev/tty ;; esac
+    printf '%b' "${BOLD}$confirm_label${RESET} [$confirm_hint]: " >"$TTY"
+    IFS= read -r confirm_answer <"$TTY" || die "Input was cancelled."
+    case "$confirm_answer" in
+      y|Y|yes|YES|Yes) return 0 ;;
+      n|N|no|NO|No) return 1 ;;
+      '') [ "$confirm_default" = yes ] && return 0 || return 1 ;;
+      *) warn "Enter y or n." ;;
+    esac
   done
 }
 
-validatePort() {
-  value=$1
-  case "$value" in ''|*[!0-9]*) fail "Invalid port: $value" ;; esac
-  if [ "$value" -lt 1 ] || [ "$value" -gt 65535 ]; then fail "Port must be between 1 and 65535."; fi
-}
-
-validateVcpUrl() {
-  value=$1
-  case "$value" in
-    wss://*/vcp/v1) ;;
-    *) fail "VCP URL must be a wss:// URL ending exactly in /vcp/v1." ;;
+expand_home() {
+  case "$1" in
+    '~') printf '%s' "$HOME" ;;
+    '~/'*) printf '%s/%s' "$HOME" "${1#\~/}" ;;
+    *) printf '%s' "$1" ;;
   esac
-  case "$value" in *'?'*|*'#'*|*'"'*) fail "VCP URL cannot contain query, fragment, or quote characters." ;; esac
-  case "$value" in *"$singleQuote"*) fail "VCP URL cannot contain quote characters." ;; esac
-  authority=${value#wss://}; authority=${authority%/vcp/v1}
-  case "$authority" in ''|*'/'*|*'@'*) fail "VCP URL must contain only a host and optional port before /vcp/v1." ;; esac
 }
 
-validateToken() {
-  value=$1
-  [ "${#value}" -eq 43 ] || fail "VCP token must be a 43-character base64url token."
-  case "$value" in *[!A-Za-z0-9_-]*) fail "VCP token contains invalid characters." ;; esac
+absolute_path() {
+  path_value=$(expand_home "$1")
+  case "$path_value" in
+    /*) printf '%s' "$path_value" ;;
+    *) die "Path must be absolute: $path_value" ;;
+  esac
 }
 
-isAbsolutePath() { case "$1" in /*) return 0 ;; *) return 1 ;; esac; }
+valid_port() {
+  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$1" -ge 1 ] 2>/dev/null && [ "$1" -le 65535 ] 2>/dev/null
+}
 
-say "${cyan}╭────────────────────────────────────╮${reset}"
-say "${cyan}│${reset}       ${green}VELRON SETUP${reset}  Initial wizard   ${cyan}│${reset}"
-say "${cyan}╰────────────────────────────────────╯${reset}"
-say "${dim}Server, local bridge, and coding-agent integration.${reset}"
-say "${dim}License: https://github.com/$repo/blob/main/LICENSE${reset}"
-if [ "$assumeYes" != "true" ]; then
-  accepted=$(askYesNo "Continue and accept the Velron license terms?" "yes")
-  [ "$accepted" = "yes" ] || { say "Setup cancelled."; exit 0; }
-fi
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
 
-if [ -z "$components" ]; then
-  if [ "$assumeYes" = "true" ]; then components="all"; else
-    choice=$(choose "What would you like to install?" 1 "Server + Client (recommended)" "Server only" "Client only")
-    case "$choice" in 1) components="all" ;; 2) components="server" ;; 3) components="client" ;; esac
-  fi
-fi
-case "$components" in server|client|all) ;; *) fail "--components must be server, client, or all." ;; esac
-
-installServer="false"; installClient="false"
-case "$components" in server) installServer="true" ;; client) installClient="true" ;; all) installServer="true"; installClient="true" ;; esac
-
-if [ "$assumeYes" != "true" ]; then installDir=$(promptDefault "Install directory" "$installDir"); fi
-isAbsolutePath "$installDir" || fail "Install directory must be absolute."
-case "$installDir" in *'"'*|*'&'*|*'<'*|*'>'*|*'\n'*) fail "Install directory contains characters that cannot be safely pinned in a Velron Hook." ;; esac
-case "$installDir" in *"$singleQuote"*) fail "Install directory contains a quote character that cannot be safely pinned in a Velron Hook." ;; esac
-case "$dataDir" in *'"'*|*'&'*|*'<'*|*'>'*|*'\n'*) fail "VELRON_HOME contains characters that cannot be safely written to startup configuration." ;; esac
-case "$dataDir" in *"$singleQuote"*) fail "VELRON_HOME cannot contain a quote character during installation." ;; esac
-
-configExists="false"
-[ -f "$dataDir/config.json" ] && configExists="true"
-if [ "$installServer" = "true" ]; then
-  configureServer="yes"
-  if [ "$configExists" = "true" ]; then configureServer=$(askYesNo "Keep existing Server settings in $dataDir/config.json?" "yes"); fi
-  if [ "$configureServer" = "yes" ] && [ "$configExists" = "true" ]; then
-    info "Existing Server settings will be preserved."
-    existingHost=$(sed -n 's/^[[:space:]]*"host"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$dataDir/config.json" | head -n 1)
-    existingPort=$(sed -n 's/^[[:space:]]*"port"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$dataDir/config.json" | head -n 1)
-    existingVcpPort=$(sed -n 's/^[[:space:]]*"localVcpPort"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$dataDir/config.json" | head -n 1)
-    serverHost="${serverHost:-${existingHost:-127.0.0.1}}"
-    serverPort="${serverPort:-${existingPort:-4141}}"
-    localVcpPort="${localVcpPort:-${existingVcpPort:-$defaultVcpPort}}"
-  else
-    serverHost="${serverHost:-127.0.0.1}"; serverPort="${serverPort:-4141}"; localVcpPort="${localVcpPort:-$defaultVcpPort}"
-    if [ "$assumeYes" != "true" ]; then
-      say "\n${cyan}Server settings${reset}"
-      serverHost=$(promptDefault "Bind host" "$serverHost")
-      serverPort=$(promptDefault "Dashboard port" "$serverPort")
-      localVcpPort=$(promptDefault "Local VCP port" "$localVcpPort")
-    fi
-    validatePort "$serverPort"; validatePort "$localVcpPort"
-    [ "$serverPort" != "$localVcpPort" ] || fail "Dashboard and local VCP ports must differ."
-    case "$serverHost" in ''|*[!A-Za-z0-9.:-]*) fail "Bind host must be an IP address or DNS hostname." ;; esac
-    case "$serverHost" in 0.0.0.0|::) warn "The dashboard will listen beyond localhost. Configure firewall and allowed hosts in Velron." ;; esac
-  fi
-  autoStart=${autoStart:-$(askYesNo "Start Velron Server automatically when you sign in?" "yes")}
-  startServer=${startServer:-$(askYesNo "Start Velron Server after installation?" "yes")}
-  openDashboard=${openDashboard:-$(askYesNo "Open the dashboard when setup finishes?" "yes")}
-fi
-
-if [ -z "$localVcpPort" ] && [ -f "$dataDir/local-vcp.json" ]; then
-  discoveredPort=$(sed -n 's/.*"port"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$dataDir/local-vcp.json" | head -n 1)
-  localVcpPort=${discoveredPort:-$defaultVcpPort}
-fi
-validatePort "${localVcpPort:-$defaultVcpPort}"
-localSuggestedUrl="wss://127.0.0.1:${localVcpPort:-$defaultVcpPort}/vcp/v1"
-customVcp="false"
-if [ "$installClient" = "true" ]; then
-  if [ -z "$vcpUrl" ]; then
-    if [ "$assumeYes" = "true" ]; then vcpUrl=$localSuggestedUrl; else
-      say "\n${cyan}Client connection${reset}"
-      say "${dim}Press Enter to use secure automatic local discovery.${reset}"
-      vcpUrl=$(promptDefault "VCP URL" "$localSuggestedUrl")
-    fi
-  fi
-  validateVcpUrl "$vcpUrl"
-  if [ "$vcpUrl" != "$localSuggestedUrl" ]; then
-    customVcp="true"
-    [ -n "$vcpToken" ] || vcpToken=$(promptSecret "VCP access token")
-    validateToken "$vcpToken"
-  fi
-  if [ -z "$clientTarget" ]; then
-    if [ "$assumeYes" = "true" ]; then clientTarget="both"; else
-      choice=$(choose "Where should Velron Client be connected?" 3 "Codex" "Claude Code" "Codex + Claude Code (recommended)" "Other… (generic stdio MCP)" "Not now")
-      case "$choice" in 1) clientTarget="codex" ;; 2) clientTarget="claude" ;; 3) clientTarget="both" ;; 4) clientTarget="other" ;; 5) clientTarget="none" ;; esac
-    fi
-  fi
-  case "$clientTarget" in codex|claude|both|other|none) ;; *) fail "Invalid --client-target." ;; esac
-  if [ "$clientTarget" = "other" ]; then
-    [ -n "$workspaceRoot" ] || workspaceRoot=$(promptDefault "Workspace directory" "$(pwd)")
-    isAbsolutePath "$workspaceRoot" || fail "Workspace directory must be absolute."
-    [ -d "$workspaceRoot" ] || fail "Workspace directory does not exist: $workspaceRoot"
-    case "$workspaceRoot" in *'"'*|*'\n'*) fail "Workspace directory cannot contain quote or newline characters." ;; esac
-  fi
-fi
-
-case "$(uname -s)" in Linux) platform="linux" ;; Darwin) platform="macos" ;; *) fail "Unsupported OS. Use install.ps1 on Windows." ;; esac
-case "$(uname -m)" in x86_64|amd64) architecture="x64" ;; arm64|aarch64) architecture="arm64" ;; *) fail "Unsupported architecture: $(uname -m)" ;; esac
-
-command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || fail "curl or wget is required."
-mkdir -p "$installDir" "$dataDir"
-chmod 700 "$dataDir" 2>/dev/null || true
-tempDir=$(mktemp -d "${TMPDIR:-/tmp}/velron-install.XXXXXX")
-trap 'rm -rf -- "$tempDir"' EXIT HUP INT TERM
+shell_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
 
 download() {
-  url=$1; destination=$2
+  download_url=$1
+  download_destination=$2
   if command -v curl >/dev/null 2>&1; then
-    if [ -n "${GITHUB_TOKEN:-}" ]; then curl -fL --retry 3 --connect-timeout 15 -H "Authorization: Bearer $GITHUB_TOKEN" -o "$destination" "$url"
-    else curl -fL --retry 3 --connect-timeout 15 -o "$destination" "$url"; fi
+    curl -fL --retry 3 --connect-timeout 15 --progress-bar "$download_url" -o "$download_destination"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -O "$download_destination" "$download_url"
   else
-    if [ -n "${GITHUB_TOKEN:-}" ]; then wget --header="Authorization: Bearer $GITHUB_TOKEN" -O "$destination" "$url"
-    else wget -O "$destination" "$url"; fi
+    die "curl or wget is required."
   fi
 }
 
-verifyAsset() {
-  asset=$1; file=$2
-  expected=$(awk -v name="$asset" '$2 == name || $2 == "*" name { print $1; exit }' "$tempDir/SHA256SUMS.txt")
-  [ -n "$expected" ] || fail "No checksum was published for $asset."
-  if command -v sha256sum >/dev/null 2>&1; then actual=$(sha256sum "$file" | awk '{print $1}')
-  elif command -v shasum >/dev/null 2>&1; then actual=$(shasum -a 256 "$file" | awk '{print $1}')
-  else fail "sha256sum or shasum is required to verify downloads."; fi
-  [ "$actual" = "$expected" ] || fail "Checksum verification failed for $asset. Existing files were not changed."
-  ok "Verified $asset"
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$1" | awk '{print $NF}'
+  else
+    die "sha256sum, shasum, or openssl is required to verify downloads."
+  fi
 }
 
-info "Downloading release checksums…"
-download "$releaseBase/SHA256SUMS.txt" "$tempDir/SHA256SUMS.txt"
+verify_asset() {
+  verify_file=$1
+  verify_name=$2
+  verify_sums=$3
+  verify_expected=$(awk -v name="$verify_name" '$2 == name || $2 == "*" name { print $1; exit }' "$verify_sums")
+  [ -n "$verify_expected" ] || die "No checksum was published for $verify_name."
+  verify_actual=$(sha256_file "$verify_file")
+  [ "$verify_actual" = "$verify_expected" ] || die "SHA-256 verification failed for $verify_name."
+  success "Verified $verify_name"
+}
 
-serverPath="$installDir/velron"
-clientPath="$installDir/velron-client"
-if [ "$installServer" = "true" ]; then
-  serverAsset="velron-$platform-$architecture"
-  info "Downloading Velron Server ($platform/$architecture)…"
-  download "$releaseBase/$serverAsset" "$tempDir/$serverAsset"
-  verifyAsset "$serverAsset" "$tempDir/$serverAsset"
-fi
-if [ "$installClient" = "true" ]; then
-  clientAsset="velron-client-$platform-$architecture"
-  info "Downloading Velron Client ($platform/$architecture)…"
-  download "$releaseBase/$clientAsset" "$tempDir/$clientAsset"
-  verifyAsset "$clientAsset" "$tempDir/$clientAsset"
-fi
+trim() {
+  printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+}
 
-if [ "$installServer" = "true" ]; then chmod 755 "$tempDir/$serverAsset"; mv -f "$tempDir/$serverAsset" "$serverPath"; fi
-if [ "$installClient" = "true" ]; then chmod 755 "$tempDir/$clientAsset"; mv -f "$tempDir/$clientAsset" "$clientPath"; fi
+allowed_hosts_json() {
+  allowed_source=$1
+  [ -n "$(trim "$allowed_source")" ] || { printf '[]'; return; }
+  old_ifs=$IFS
+  IFS=','
+  set -f
+  set -- $allowed_source
+  set +f
+  IFS=$old_ifs
+  allowed_result='['
+  allowed_separator=''
+  for allowed_host in "$@"; do
+    allowed_host=$(trim "$allowed_host")
+    [ -n "$allowed_host" ] || continue
+    case "$allowed_host" in *[!A-Za-z0-9.:'['\]_-]*) die "Invalid allowed host: $allowed_host" ;; esac
+    allowed_result="$allowed_result$allowed_separator\"$(json_escape "$allowed_host")\""
+    allowed_separator=','
+  done
+  printf '%s]' "$allowed_result"
+}
 
-if [ "$installServer" = "true" ] && { [ "$configExists" = "false" ] || [ "$configureServer" = "no" ]; }; then
+write_private_file() {
+  private_path=$1
+  private_content=$2
+  private_tmp="$private_path.tmp.$$"
   umask 077
-  configTemp="$dataDir/config.json.new.$$"
-  cat >"$configTemp" <<EOF
-{
-  "schemaVersion": 1,
-  "host": "$serverHost",
-  "port": $serverPort,
-  "localVcpPort": $localVcpPort,
-  "allowedHosts": [],
-  "managementSecureCookies": false,
-  "maxConcurrentRuns": 4,
-  "maxRunStartsPerMinute": 60,
-  "maxRunContextBytes": 8388608
+  printf '%s' "$private_content" >"$private_tmp"
+  chmod 600 "$private_tmp"
+  mv -f "$private_tmp" "$private_path"
 }
-EOF
-  mv -f "$configTemp" "$dataDir/config.json"
-  ok "Created Server settings"
-fi
 
-addPathLine() {
-  profile=$1
-  marker="# Added by Velron installer"
-  [ -f "$profile" ] && grep -F "$marker" "$profile" >/dev/null 2>&1 && return
+write_launcher() {
+  launcher_path=$1
+  runtime_path=$2
+  config_path=$3
+  launcher_tmp="$launcher_path.tmp.$$"
   {
-    printf '\n%s\n' "$marker"
-    printf 'export PATH="%s:$%s"\n' "$installDir" 'PATH'
-  } >>"$profile"
-  ok "Added Velron to PATH in $profile"
-}
-case "${SHELL:-}" in */zsh) addPathLine "$HOME/.zshrc" ;; */bash) addPathLine "$HOME/.bashrc" ;; *) addPathLine "$HOME/.profile" ;; esac
-export PATH="$installDir:$PATH"
-
-marketplaceDir="$dataDir/plugin-marketplace"
-pluginDir="$marketplaceDir/plugins/velron"
-clientCommand="$clientPath"
-if [ "$installClient" = "true" ] && { [ "$customVcp" = "true" ] || [ "$dataDir" != "$defaultDataDir" ]; }; then
-  envFile="$dataDir/client.env"
-  umask 077
-  printf "VELRON_HOME='%s'\nexport VELRON_HOME\n" "$dataDir" >"$envFile"
-  if [ "$customVcp" = "true" ]; then
-    printf "VELRON_VCP_URL='%s'\nVELRON_VCP_TOKEN='%s'\nexport VELRON_VCP_URL VELRON_VCP_TOKEN\n" "$vcpUrl" "$vcpToken" >>"$envFile"
-  fi
-  chmod 600 "$envFile"
-  clientCommand="$installDir/velron-client-connect"
-  cat >"$clientCommand" <<EOF
-#!/bin/sh
-. '$envFile'
-exec '$clientPath' "\$@"
-EOF
-  chmod 700 "$clientCommand"
-elif [ "$installClient" = "true" ]; then
-  rm -f -- "$dataDir/client.env" "$installDir/velron-client-connect"
-fi
-
-patchPluginCommand() {
-  file=$1; replacement=$2
-  tempFile="$file.new.$$"
-  awk -v replacement="$replacement" '
-    /"command":/ { sub(/"command": "[^"]*"/, "\"command\": \"" replacement "\"") }
-    { print }
-  ' "$file" >"$tempFile"
-  chmod 600 "$tempFile" 2>/dev/null || true
-  mv -f "$tempFile" "$file"
+    printf '%s\n' '#!/bin/sh' 'set -eu' 'set -a'
+    printf '[ ! -f %s ] || . %s\n' "$(shell_quote "$config_path")" "$(shell_quote "$config_path")"
+    printf '%s\n' 'set +a'
+    printf 'exec %s "$@"\n' "$(shell_quote "$runtime_path")"
+  } >"$launcher_tmp"
+  chmod 755 "$launcher_tmp"
+  mv -f "$launcher_tmp" "$launcher_path"
 }
 
-setupHostPlugins="false"
-case "$clientTarget" in codex|claude|both) setupHostPlugins="true" ;; esac
-if [ "$installClient" = "true" ] && [ "$setupHostPlugins" = "true" ]; then
-  info "Generating a pinned Velron plugin…"
-  if VELRON_HOME="$dataDir" "$clientPath" setup-plugin --client-path "$clientPath" >/dev/null 2>&1; then :
-  elif [ -f "$pluginDir/.velron-generated.json" ]; then
-    if ! grep -F "\"clientExecutablePath\": \"$clientPath\"" "$pluginDir/.velron-generated.json" >/dev/null 2>&1; then
-      fail "The existing plugin pins a different Client path. Review or move $marketplaceDir, then rerun setup."
+ensure_path() {
+  path_directory=$1
+  case ":$PATH:" in
+    *":$path_directory:"*) ;;
+    *) PATH="$path_directory:$PATH"; export PATH ;;
+  esac
+  path_line="export PATH=$(shell_quote "$path_directory"):\$PATH"
+  for profile in "$HOME/.profile" "$HOME/.zprofile"; do
+    if [ -e "$profile" ] && [ ! -f "$profile" ]; then
+      warn "Skipped non-regular shell profile: $profile"
+      continue
     fi
-    warn "The existing generated plugin was refreshed."
-  else
-    fail "Plugin generation failed. Review or move the existing $marketplaceDir directory, then rerun setup."
-  fi
-  patchPluginCommand "$pluginDir/.mcp.json" "$clientCommand"
-  patchPluginCommand "$pluginDir/.codex-plugin/plugin.json" "$clientCommand"
-fi
-
-installCodexPlugin() {
-  if command -v codex >/dev/null 2>&1; then
-    if codex plugin marketplace add "$marketplaceDir" && codex plugin add velron@velron-local; then ok "Installed the Velron plugin for Codex"
-    else warn "Codex did not accept automatic plugin setup. Run the commands shown below."; fi
-  else warn "Codex CLI was not found. The plugin is ready for later installation."; fi
-}
-installClaudePlugin() {
-  if command -v claude >/dev/null 2>&1; then
-    if claude plugin marketplace add "$marketplaceDir" --scope user && claude plugin install velron@velron-local --scope user; then ok "Installed the Velron plugin for Claude Code"
-    else warn "Claude Code did not accept automatic plugin setup. Run the commands shown below."; fi
-  else warn "Claude Code CLI was not found. The plugin is ready for later installation."; fi
-}
-case "$clientTarget" in codex) installCodexPlugin ;; claude) installClaudePlugin ;; both) installCodexPlugin; installClaudePlugin ;; esac
-
-genericConfig=""
-if [ "$installClient" = "true" ] && [ "$clientTarget" = "other" ]; then
-  genericConfig="$dataDir/stdio-mcp.json"
-  umask 077
-  escapedWorkspace=$(printf '%s' "$workspaceRoot" | sed 's/\\/\\\\/g; s/"/\\"/g')
-  escapedCommand=$(printf '%s' "$clientCommand" | sed 's/\\/\\\\/g; s/"/\\"/g')
-  cat >"$genericConfig" <<EOF
-{
-  "mcpServers": {
-    "velron": {
-      "command": "$escapedCommand",
-      "args": [],
-      "env": {
-        "VELRON_WORKSPACE_ROOT": "$escapedWorkspace"
-      }
-    }
-  }
-}
-EOF
-  chmod 600 "$genericConfig"
-  ok "Created generic stdio MCP configuration"
-fi
-
-autoStartLaunched="false"
-installAutostart() {
-  if [ "$platform" = "macos" ]; then
-    launchDir="$HOME/Library/LaunchAgents"; plist="$launchDir/com.codenamemc.velron.plist"
-    mkdir -p "$launchDir"
-    cat >"$plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>Label</key><string>com.codenamemc.velron</string>
-  <key>ProgramArguments</key><array><string>$serverPath</string></array>
-  <key>EnvironmentVariables</key><dict><key>VELRON_HOME</key><string>$dataDir</string></dict>
-  <key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
-  <key>StandardOutPath</key><string>$dataDir/server.log</string>
-  <key>StandardErrorPath</key><string>$dataDir/server.log</string>
-</dict></plist>
-EOF
-    if [ "$startServer" = "yes" ]; then
-      launchctl bootout "gui/$(id -u)/com.codenamemc.velron" >/dev/null 2>&1 || true
-      if launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1; then autoStartLaunched="true"
-      else warn "LaunchAgent was created but could not be started now."; fi
+    if [ ! -f "$profile" ] || ! grep -F '# >>> velron >>>' "$profile" >/dev/null 2>&1; then
+      {
+        printf '\n%s\n' '# >>> velron >>>'
+        printf '%s\n' "$path_line"
+        printf '%s\n' '# <<< velron <<<'
+      } >>"$profile"
     fi
-    ok "Registered Velron Server as a macOS LaunchAgent"
-  elif command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
-    unitDir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"; unit="$unitDir/velron.service"
-    mkdir -p "$unitDir"
-    cat >"$unit" <<EOF
+  done
+}
+
+configure_autostart() {
+  autostart_command=$1
+  if [ "$OS_NAME" = linux ]; then
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+      unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+      unit_file="$unit_dir/velron.service"
+      mkdir -p "$unit_dir"
+      systemd_exec=$(printf '%s' "$autostart_command" | sed 's/\\/\\\\/g; s/"/\\"/g')
+      cat >"$unit_file" <<EOF
 [Unit]
 Description=Velron Server
 After=network-online.target
 
 [Service]
-Environment="VELRON_HOME=$dataDir"
-ExecStart="$serverPath"
+Type=simple
+ExecStart="$systemd_exec"
 Restart=on-failure
 RestartSec=3
 
 [Install]
 WantedBy=default.target
 EOF
-    systemctl --user daemon-reload
-    systemctl --user enable velron.service >/dev/null
-    if [ "$startServer" = "yes" ] && systemctl --user restart velron.service; then autoStartLaunched="true"; fi
-    ok "Registered Velron Server as a systemd user service"
-  else
-    autostartDir="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"; desktop="$autostartDir/velron.desktop"
-    mkdir -p "$autostartDir"
-    cat >"$desktop" <<EOF
+      systemctl --user daemon-reload
+      systemctl --user enable velron.service >/dev/null
+      AUTOSTART_KIND=systemd
+      success "Registered Velron Server with systemd user services"
+    else
+      desktop_dir="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
+      mkdir -p "$desktop_dir"
+      escaped_exec=$(printf '%s' "$autostart_command" | sed 's/ /\\ /g; s/%/%%/g')
+      cat >"$desktop_dir/velron.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Velron Server
-Exec=env VELRON_HOME="$dataDir" "$serverPath"
+Comment=Start Velron Server when you sign in
+Exec=$escaped_exec
 Terminal=false
 X-GNOME-Autostart-enabled=true
 EOF
-    chmod 600 "$desktop"
-    ok "Registered Velron Server for desktop login"
+      AUTOSTART_KIND=desktop
+      success "Registered Velron Server in desktop autostart"
+    fi
+  else
+    launch_dir="$HOME/Library/LaunchAgents"
+    launch_file="$launch_dir/com.codenamemc.velron.plist"
+    mkdir -p "$launch_dir"
+    escaped_xml=$(printf '%s' "$autostart_command" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+    escaped_home_xml=$(printf '%s' "$VELRON_HOME_PATH" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+    cat >"$launch_file" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.codenamemc.velron</string>
+  <key>ProgramArguments</key><array><string>$escaped_xml</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><false/>
+  <key>StandardOutPath</key><string>$escaped_home_xml/server.log</string>
+  <key>StandardErrorPath</key><string>$escaped_home_xml/server-error.log</string>
+</dict>
+</plist>
+EOF
+    AUTOSTART_KIND=launchd
+    success "Registered Velron Server as a LaunchAgent"
   fi
 }
 
-removeAutostart() {
-  if [ "$platform" = "macos" ]; then
-    rm -f -- "$HOME/Library/LaunchAgents/com.codenamemc.velron.plist"
-  else
-    unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/velron.service"
-    if [ -f "$unit" ] && command -v systemctl >/dev/null 2>&1; then
-      systemctl --user disable velron.service >/dev/null 2>&1 || true
-      rm -f -- "$unit"
+remove_autostart() {
+  if [ "$OS_NAME" = linux ]; then
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl --user disable --now velron.service >/dev/null 2>&1 || true
+      rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/velron.service"
       systemctl --user daemon-reload >/dev/null 2>&1 || true
     fi
-    rm -f -- "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/velron.desktop"
+    rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/velron.desktop"
+  else
+    launchctl bootout "gui/$(id -u)/com.codenamemc.velron" >/dev/null 2>&1 || true
+    rm -f "$HOME/Library/LaunchAgents/com.codenamemc.velron.plist"
   fi
 }
 
-if [ "$installServer" = "true" ] && [ "$autoStart" = "yes" ]; then installAutostart; fi
-if [ "$installServer" = "true" ] && [ "$autoStart" = "no" ]; then removeAutostart; fi
-if [ "$installServer" = "true" ] && [ "$startServer" = "yes" ] && [ "$autoStartLaunched" != "true" ]; then
-  VELRON_HOME="$dataDir" nohup "$serverPath" >>"$dataDir/server.log" 2>&1 &
-  ok "Started Velron Server"
+install_host_plugin() {
+  plugin_host=$1
+  marketplace=$2
+  if [ "$plugin_host" = codex ]; then
+    if command -v codex >/dev/null 2>&1; then
+      if codex plugin marketplace add "$marketplace" && codex plugin add velron@velron-local; then
+        success "Installed the Velron plugin for Codex"
+      else
+        warn "Codex plugin registration did not finish. Run: codex plugin marketplace add $(shell_quote "$marketplace")"
+        warn "Then run: codex plugin add velron@velron-local"
+      fi
+    else
+      warn "Codex CLI was not found. After installing it, run:"
+      say "  codex plugin marketplace add $(shell_quote "$marketplace")"
+      say "  codex plugin add velron@velron-local"
+    fi
+  else
+    if command -v claude >/dev/null 2>&1; then
+      if claude plugin marketplace add "$marketplace" --scope user && claude plugin install velron@velron-local --scope user; then
+        success "Installed the Velron plugin for Claude Code"
+      else
+        warn "Claude Code plugin registration did not finish. Run: claude plugin marketplace add $(shell_quote "$marketplace") --scope user"
+        warn "Then run: claude plugin install velron@velron-local --scope user"
+      fi
+    else
+      warn "Claude Code CLI was not found. After installing it, run:"
+      say "  claude plugin marketplace add $(shell_quote "$marketplace") --scope user"
+      say "  claude plugin install velron@velron-local --scope user"
+    fi
+  fi
+}
+
+say "${BLUE}${BOLD}Velron installer${RESET}"
+say "Server, Client, host plugins, PATH, and startup setup"
+
+case "$(uname -s)" in
+  Linux) OS_NAME=linux ;;
+  Darwin) OS_NAME=macos ;;
+  *) die "This installer supports Linux and macOS. Use install.ps1 on Windows." ;;
+esac
+case "$(uname -m)" in
+  x86_64|amd64) ARCH_NAME=x64 ;;
+  arm64|aarch64) ARCH_NAME=arm64 ;;
+  *) die "Unsupported architecture: $(uname -m)" ;;
+esac
+
+install_choice=$(menu "What do you want to install?" "Server and Client" "Server only" "Client only")
+INSTALL_SERVER=false
+INSTALL_CLIENT=false
+case "$install_choice" in
+  1) INSTALL_SERVER=true; INSTALL_CLIENT=true ;;
+  2) INSTALL_SERVER=true ;;
+  3) INSTALL_CLIENT=true ;;
+esac
+
+default_velron_home="$HOME/.velron"
+VELRON_HOME_PATH=$(absolute_path "$(prompt "Velron data and configuration directory" "$default_velron_home")")
+default_command_dir="$HOME/.local/bin"
+COMMAND_DIR=$(absolute_path "$(prompt "Command directory (added to PATH)" "$default_command_dir")")
+RUNTIME_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/velron/bin"
+SERVER_ENV_PATH="$VELRON_HOME_PATH/server.env"
+CLIENT_ENV_PATH="$VELRON_HOME_PATH/client.env"
+
+SERVER_HOST=127.0.0.1
+SERVER_HTTP_PORT=$DEFAULT_HTTP_PORT
+SERVER_VCP_PORT=$DEFAULT_VCP_PORT
+SERVER_ALLOWED_HOSTS=''
+WRITE_SERVER_CONFIG=false
+if [ "$INSTALL_SERVER" = true ]; then
+  existing_config="$VELRON_HOME_PATH/config.json"
+  if [ -f "$existing_config" ] && confirm "Keep the existing Server config at $existing_config?" yes; then
+    discovered_port=$(sed -n 's/.*"localVcpPort"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$existing_config" | head -n 1)
+    [ -z "$discovered_port" ] || SERVER_VCP_PORT=$discovered_port
+  else
+    WRITE_SERVER_CONFIG=true
+    SERVER_HOST=$(prompt "Server bind host" "$SERVER_HOST")
+    SERVER_HTTP_PORT=$(prompt "Management HTTP port" "$SERVER_HTTP_PORT")
+    valid_port "$SERVER_HTTP_PORT" || die "Invalid HTTP port: $SERVER_HTTP_PORT"
+    SERVER_VCP_PORT=$(prompt "Pinned local VCP port" "$SERVER_VCP_PORT")
+    valid_port "$SERVER_VCP_PORT" || die "Invalid VCP port: $SERVER_VCP_PORT"
+    [ "$SERVER_HTTP_PORT" != "$SERVER_VCP_PORT" ] || die "HTTP and VCP ports must differ."
+    SERVER_ALLOWED_HOSTS=$(prompt "Additional allowed hosts (comma-separated, optional)" "")
+  fi
+  if confirm "Start Velron Server automatically when you sign in?" yes; then
+    ENABLE_AUTOSTART=true
+  else
+    ENABLE_AUTOSTART=false
+  fi
+  if confirm "Start Velron Server after installation?" yes; then
+    START_SERVER_NOW=true
+  else
+    START_SERVER_NOW=false
+  fi
 fi
 
-dashboardHost=$serverHost
-case "$dashboardHost" in 0.0.0.0|::) dashboardHost="127.0.0.1" ;; esac
-dashboardUrl="http://$dashboardHost:${serverPort:-4141}/"
-if [ "$installServer" = "true" ] && [ "$startServer" = "yes" ]; then
-  attempts=0
-  while [ "$attempts" -lt 20 ]; do
-    if command -v curl >/dev/null 2>&1 && curl -fsS --max-time 1 "$dashboardUrl" >/dev/null 2>&1; then break; fi
-    attempts=$((attempts + 1)); sleep 1
-  done
-  if [ "$attempts" -lt 20 ]; then ok "Server is ready at $dashboardUrl"
-  else warn "Server is still starting. Check $dataDir/server.log"; fi
+VCP_MODE=local
+VCP_URL="wss://127.0.0.1:$SERVER_VCP_PORT/vcp/v1"
+VCP_TOKEN=''
+FIXED_WORKSPACE=''
+INTEGRATION_CHOICE=0
+if [ "$INSTALL_CLIENT" = true ]; then
+  say ""
+  say "${BOLD}Client connection${RESET}"
+  say "Press Enter to use automatic local discovery. Enter a different wss:// URL for a remote Server."
+  entered_vcp_url=$(prompt "VCP URL" "$VCP_URL")
+  if [ "$entered_vcp_url" != "$VCP_URL" ]; then
+    case "$entered_vcp_url" in
+      wss://*) ;;
+      *) die "Remote VCP URL must use wss:// and target exactly /vcp/v1." ;;
+    esac
+    case "$entered_vcp_url" in *'?'*|*'#'*|wss://*@*) die "VCP URL cannot contain credentials, a query, or a fragment." ;; esac
+    vcp_remainder=${entered_vcp_url#wss://}
+    vcp_authority=${vcp_remainder%%/*}
+    vcp_path=/${vcp_remainder#*/}
+    [ -n "$vcp_authority" ] && [ "$vcp_authority" != "$vcp_remainder" ] && [ "$vcp_path" = /vcp/v1 ] \
+      || die "Remote VCP URL must target exactly /vcp/v1."
+    VCP_MODE=remote
+    VCP_URL=$entered_vcp_url
+    VCP_TOKEN=$(secret_prompt "VCP access token")
+    case "$VCP_TOKEN" in
+      *[!A-Za-z0-9_-]*|'') die "VCP token must be a 43-character base64url value." ;;
+    esac
+    [ "${#VCP_TOKEN}" -eq 43 ] || die "VCP token must be exactly 43 characters."
+  fi
+
+  INTEGRATION_CHOICE=$(menu "Where should Velron Client be connected?" "Codex" "Claude Code" "Codex and Claude Code" "Other... (generic stdio MCP)")
+  if [ "$INTEGRATION_CHOICE" = 4 ]; then
+    workspace_default=$(pwd -P)
+    while :; do
+      FIXED_WORKSPACE=$(absolute_path "$(prompt "Workspace directory for this stdio connection" "$workspace_default")")
+      [ -d "$FIXED_WORKSPACE" ] && break
+      warn "Directory does not exist: $FIXED_WORKSPACE"
+    done
+  elif confirm "Always restrict this Client to one workspace directory?" no; then
+    workspace_default=$(pwd -P)
+    while :; do
+      FIXED_WORKSPACE=$(absolute_path "$(prompt "Fixed workspace directory" "$workspace_default")")
+      [ -d "$FIXED_WORKSPACE" ] && break
+      warn "Directory does not exist: $FIXED_WORKSPACE"
+    done
+  fi
 fi
 
-say "\n${green}Velron is ready.${reset}"
-say "  Binaries: $installDir"
-say "  Data:     $dataDir"
-[ "$installServer" = "true" ] && say "  Dashboard: $dashboardUrl"
-[ -n "$genericConfig" ] && say "  stdio MCP config: $genericConfig"
-case "$clientTarget" in
-  codex|both) say "  Codex fallback: codex plugin marketplace add '$marketplaceDir' && codex plugin add velron@velron-local" ;;
-esac
-case "$clientTarget" in
-  claude|both) say "  Claude fallback: claude plugin marketplace add '$marketplaceDir' --scope user && claude plugin install velron@velron-local --scope user" ;;
-esac
-say "${dim}Open a new terminal before using velron or velron-client from PATH.${reset}"
-case "$clientTarget" in codex|both) warn "Start a new Codex session, open /hooks, and trust the Velron PreToolUse hook after checking its pinned path." ;; esac
+say ""
+say "${BOLD}Installation summary${RESET}"
+say "  Platform:        $OS_NAME-$ARCH_NAME"
+say "  Components:      $([ "$INSTALL_SERVER" = true ] && printf Server)$([ "$INSTALL_SERVER" = true ] && [ "$INSTALL_CLIENT" = true ] && printf ' + ')$([ "$INSTALL_CLIENT" = true ] && printf Client)"
+say "  Velron home:     $VELRON_HOME_PATH"
+say "  Command path:    $COMMAND_DIR"
+if [ "$INSTALL_CLIENT" = true ]; then
+  say "  VCP:             $VCP_URL ($VCP_MODE)"
+fi
+confirm "Continue?" yes || { info "Installation cancelled."; exit 0; }
 
-if [ "$installServer" = "true" ] && [ "$openDashboard" = "yes" ]; then
-  if [ -f "$dataDir/management-token" ]; then token=$(tr -d '\r\n' <"$dataDir/management-token"); dashboardUrl="${dashboardUrl}#managementToken=$token"; fi
-  if [ "$platform" = "macos" ]; then open "$dashboardUrl" >/dev/null 2>&1 || true
-  elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$dashboardUrl" >/dev/null 2>&1 || true; fi
+TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/velron-installer.XXXXXX")
+cleanup() { rm -rf "$TEMP_DIR"; }
+trap cleanup EXIT HUP INT TERM
+SUMS_PATH="$TEMP_DIR/SHA256SUMS.txt"
+info "Downloading release checksums..."
+download "$LATEST_BASE_URL/SHA256SUMS.txt" "$SUMS_PATH"
+
+mkdir -p "$RUNTIME_DIR" "$COMMAND_DIR" "$VELRON_HOME_PATH"
+chmod 700 "$VELRON_HOME_PATH"
+
+if [ "$INSTALL_SERVER" = true ]; then
+  SERVER_ASSET="velron-$OS_NAME-$ARCH_NAME"
+  SERVER_DOWNLOAD="$TEMP_DIR/$SERVER_ASSET"
+  info "Downloading $SERVER_ASSET..."
+  download "$LATEST_BASE_URL/$SERVER_ASSET" "$SERVER_DOWNLOAD"
+  verify_asset "$SERVER_DOWNLOAD" "$SERVER_ASSET" "$SUMS_PATH"
+  SERVER_RUNTIME="$RUNTIME_DIR/velron-runtime"
+  SERVER_COMMAND="$COMMAND_DIR/velron"
+  cp "$SERVER_DOWNLOAD" "$SERVER_RUNTIME.tmp.$$"
+  chmod 755 "$SERVER_RUNTIME.tmp.$$"
+  mv -f "$SERVER_RUNTIME.tmp.$$" "$SERVER_RUNTIME"
+fi
+
+if [ "$INSTALL_CLIENT" = true ]; then
+  CLIENT_ASSET="velron-client-$OS_NAME-$ARCH_NAME"
+  CLIENT_DOWNLOAD="$TEMP_DIR/$CLIENT_ASSET"
+  info "Downloading $CLIENT_ASSET..."
+  download "$LATEST_BASE_URL/$CLIENT_ASSET" "$CLIENT_DOWNLOAD"
+  verify_asset "$CLIENT_DOWNLOAD" "$CLIENT_ASSET" "$SUMS_PATH"
+  CLIENT_RUNTIME="$RUNTIME_DIR/velron-client-runtime"
+  CLIENT_COMMAND="$COMMAND_DIR/velron-client"
+  cp "$CLIENT_DOWNLOAD" "$CLIENT_RUNTIME.tmp.$$"
+  chmod 755 "$CLIENT_RUNTIME.tmp.$$"
+  mv -f "$CLIENT_RUNTIME.tmp.$$" "$CLIENT_RUNTIME"
+fi
+
+if [ "$INSTALL_SERVER" = true ]; then
+  server_env_content="VELRON_HOME=$(shell_quote "$VELRON_HOME_PATH")\n"
+  write_private_file "$SERVER_ENV_PATH" "$(printf '%b' "$server_env_content")"
+  write_launcher "$SERVER_COMMAND" "$SERVER_RUNTIME" "$SERVER_ENV_PATH"
+  if [ "$WRITE_SERVER_CONFIG" = true ]; then
+    allowed_json=$(allowed_hosts_json "$SERVER_ALLOWED_HOSTS")
+    server_json=$(cat <<EOF
+{
+  "schemaVersion": 1,
+  "host": "$(json_escape "$SERVER_HOST")",
+  "port": $SERVER_HTTP_PORT,
+  "localVcpPort": $SERVER_VCP_PORT,
+  "allowedHosts": $allowed_json,
+  "managementSecureCookies": false,
+  "maxConcurrentRuns": 4,
+  "maxRunStartsPerMinute": 60,
+  "maxRunContextBytes": 8388608
+}
+EOF
+)
+    write_private_file "$VELRON_HOME_PATH/config.json" "$server_json"
+  fi
+fi
+if [ "$INSTALL_CLIENT" = true ]; then
+  client_env_content="VELRON_HOME=$(shell_quote "$VELRON_HOME_PATH")\n"
+  if [ "$VCP_MODE" = remote ]; then
+    client_env_content="${client_env_content}VELRON_VCP_URL=$(shell_quote "$VCP_URL")\nVELRON_VCP_TOKEN=$(shell_quote "$VCP_TOKEN")\n"
+  fi
+  if [ -n "$FIXED_WORKSPACE" ]; then
+    client_env_content="${client_env_content}VELRON_WORKSPACE_ROOT=$(shell_quote "$FIXED_WORKSPACE")\n"
+  fi
+  write_private_file "$CLIENT_ENV_PATH" "$(printf '%b' "$client_env_content")"
+  write_launcher "$CLIENT_COMMAND" "$CLIENT_RUNTIME" "$CLIENT_ENV_PATH"
+fi
+
+ensure_path "$COMMAND_DIR"
+success "Added Velron commands to PATH"
+
+if [ "$INSTALL_CLIENT" = true ]; then
+  info "Generating the signed local plugin marketplace..."
+  "$CLIENT_COMMAND" setup-plugin --client-path "$CLIENT_COMMAND"
+  MARKETPLACE_DIR="$VELRON_HOME_PATH/plugin-marketplace"
+  case "$INTEGRATION_CHOICE" in
+    1) install_host_plugin codex "$MARKETPLACE_DIR" ;;
+    2) install_host_plugin claude "$MARKETPLACE_DIR" ;;
+    3) install_host_plugin codex "$MARKETPLACE_DIR"; install_host_plugin claude "$MARKETPLACE_DIR" ;;
+    4)
+      OTHER_CONFIG="$VELRON_HOME_PATH/stdio-mcp.json"
+      env_json="\"VELRON_HOME\": \"$(json_escape "$VELRON_HOME_PATH")\""
+      if [ "$VCP_MODE" = remote ]; then
+        env_json="$env_json,
+        \"VELRON_VCP_URL\": \"$(json_escape "$VCP_URL")\",
+        \"VELRON_VCP_TOKEN\": \"$(json_escape "$VCP_TOKEN")\""
+      fi
+      env_json="$env_json,
+        \"VELRON_WORKSPACE_ROOT\": \"$(json_escape "$FIXED_WORKSPACE")\""
+      other_json=$(cat <<EOF
+{
+  "mcpServers": {
+    "velron": {
+      "command": "$(json_escape "$CLIENT_COMMAND")",
+      "args": [],
+      "env": {
+        $env_json
+      }
+    }
+  }
+}
+EOF
+)
+      write_private_file "$OTHER_CONFIG" "$other_json"
+      success "Wrote generic stdio MCP configuration to $OTHER_CONFIG"
+      ;;
+  esac
+fi
+
+if [ "$INSTALL_SERVER" = true ]; then
+  if [ "$ENABLE_AUTOSTART" = true ]; then
+    configure_autostart "$SERVER_COMMAND"
+  else
+    remove_autostart
+    info "Velron Server autostart is disabled"
+  fi
+  if [ "$START_SERVER_NOW" = true ]; then
+    if [ "${AUTOSTART_KIND:-}" = systemd ]; then
+      systemctl --user restart velron.service
+    elif [ "${AUTOSTART_KIND:-}" = launchd ]; then
+      launchctl bootout "gui/$(id -u)/com.codenamemc.velron" >/dev/null 2>&1 || true
+      launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.codenamemc.velron.plist" >/dev/null 2>&1 || warn "LaunchAgent was written but could not be loaded in this terminal."
+      launchctl kickstart -k "gui/$(id -u)/com.codenamemc.velron" >/dev/null 2>&1 || true
+    else
+      nohup "$SERVER_COMMAND" >"$VELRON_HOME_PATH/server.log" 2>"$VELRON_HOME_PATH/server-error.log" &
+    fi
+    success "Started Velron Server"
+  fi
+fi
+
+say ""
+success "Velron installation is complete."
+say "Open a new terminal, then run:"
+[ "$INSTALL_SERVER" = true ] && say "  velron"
+[ "$INSTALL_CLIENT" = true ] && say "  velron-client --help"
+if [ "$INTEGRATION_CHOICE" = 1 ] || [ "$INTEGRATION_CHOICE" = 3 ]; then
+  warn "Start a new Codex session, open /hooks, and trust the Velron PreToolUse Hook only after checking its absolute Client path."
 fi
