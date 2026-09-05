@@ -183,7 +183,7 @@ case "$components" in server) installServer="true" ;; client) installClient="tru
 
 if [ "$assumeYes" != "true" ]; then installDir=$(promptDefault "Install directory" "$installDir"); fi
 isAbsolutePath "$installDir" || fail "Install directory must be absolute."
-case "$installDir" in *'"'*|*'\\'*|*'&'*|*'<'*|*'>'*|*'\n'*) fail "Install directory contains characters that cannot be safely pinned in a Velron Hook." ;; esac
+case "$installDir" in *'"'*|*'&'*|*'<'*|*'>'*|*'\n'*) fail "Install directory contains characters that cannot be safely pinned in a Velron Hook." ;; esac
 case "$installDir" in *"$singleQuote"*) fail "Install directory contains a quote character that cannot be safely pinned in a Velron Hook." ;; esac
 case "$dataDir" in *'"'*|*'&'*|*'<'*|*'>'*|*'\n'*) fail "VELRON_HOME contains characters that cannot be safely written to startup configuration." ;; esac
 case "$dataDir" in *"$singleQuote"*) fail "VELRON_HOME cannot contain a quote character during installation." ;; esac
