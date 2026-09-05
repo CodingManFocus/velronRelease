@@ -1,0 +1,46 @@
+name: Installer checks
+
+on:
+  push:
+    paths:
+      - install.sh
+      - install.ps1
+      - .github/workflows/installer-checks.yml
+  pull_request:
+    paths:
+      - install.sh
+      - install.ps1
+      - .github/workflows/installer-checks.yml
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse POSIX installer
+        run: sh -n install.sh
+      - name: Lint POSIX installer
+        run: shellcheck -s sh install.sh
+      - name: Check help
+        run: sh install.sh --help
+
+  powershell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse PowerShell installer
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path ./install.ps1),
+            [ref] $tokens,
+            [ref] $errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | Format-List | Out-String | Write-Error
+          }
