@@ -25,6 +25,7 @@ if [ -t 1 ]; then
 else
   cyan=''; green=''; yellow=''; red=''; dim=''; reset=''
 fi
+singleQuote="'"
 
 say() { printf '%b\n' "$*"; }
 info() { say "${cyan}◆${reset} $*"; }
@@ -136,7 +137,7 @@ askYesNo() {
 validatePort() {
   value=$1
   case "$value" in ''|*[!0-9]*) fail "Invalid port: $value" ;; esac
-  [ "$value" -ge 1 ] && [ "$value" -le 65535 ] || fail "Port must be between 1 and 65535."
+  if [ "$value" -lt 1 ] || [ "$value" -gt 65535 ]; then fail "Port must be between 1 and 65535."; fi
 }
 
 validateVcpUrl() {
@@ -145,7 +146,8 @@ validateVcpUrl() {
     wss://*/vcp/v1) ;;
     *) fail "VCP URL must be a wss:// URL ending exactly in /vcp/v1." ;;
   esac
-  case "$value" in *'?'*|*'#'*|*'"'*|*"'"*) fail "VCP URL cannot contain query, fragment, or quote characters." ;; esac
+  case "$value" in *'?'*|*'#'*|*'"'*) fail "VCP URL cannot contain query, fragment, or quote characters." ;; esac
+  case "$value" in *"$singleQuote"*) fail "VCP URL cannot contain quote characters." ;; esac
   authority=${value#wss://}; authority=${authority%/vcp/v1}
   case "$authority" in ''|*'/'*|*'@'*) fail "VCP URL must contain only a host and optional port before /vcp/v1." ;; esac
 }
@@ -181,8 +183,10 @@ case "$components" in server) installServer="true" ;; client) installClient="tru
 
 if [ "$assumeYes" != "true" ]; then installDir=$(promptDefault "Install directory" "$installDir"); fi
 isAbsolutePath "$installDir" || fail "Install directory must be absolute."
-case "$installDir" in *'"'*|*"'"*|*'\\'*|*'&'*|*'<'*|*'>'*|*'\n'*) fail "Install directory contains characters that cannot be safely pinned in a Velron Hook." ;; esac
-case "$dataDir" in *'"'*|*"'"*|*'&'*|*'<'*|*'>'*|*'\n'*) fail "VELRON_HOME contains characters that cannot be safely written to startup configuration." ;; esac
+case "$installDir" in *'"'*|*'\\'*|*'&'*|*'<'*|*'>'*|*'\n'*) fail "Install directory contains characters that cannot be safely pinned in a Velron Hook." ;; esac
+case "$installDir" in *"$singleQuote"*) fail "Install directory contains a quote character that cannot be safely pinned in a Velron Hook." ;; esac
+case "$dataDir" in *'"'*|*'&'*|*'<'*|*'>'*|*'\n'*) fail "VELRON_HOME contains characters that cannot be safely written to startup configuration." ;; esac
+case "$dataDir" in *"$singleQuote"*) fail "VELRON_HOME cannot contain a quote character during installation." ;; esac
 
 configExists="false"
 [ -f "$dataDir/config.json" ] && configExists="true"
@@ -327,7 +331,10 @@ addPathLine() {
   profile=$1
   marker="# Added by Velron installer"
   [ -f "$profile" ] && grep -F "$marker" "$profile" >/dev/null 2>&1 && return
-  printf '\n%s\nexport PATH="%s:$PATH"\n' "$marker" "$installDir" >>"$profile"
+  {
+    printf '\n%s\n' "$marker"
+    printf 'export PATH="%s:$%s"\n' "$installDir" 'PATH'
+  } >>"$profile"
   ok "Added Velron to PATH in $profile"
 }
 case "${SHELL:-}" in */zsh) addPathLine "$HOME/.zshrc" ;; */bash) addPathLine "$HOME/.bashrc" ;; *) addPathLine "$HOME/.profile" ;; esac
@@ -507,7 +514,8 @@ if [ "$installServer" = "true" ] && [ "$startServer" = "yes" ]; then
     if command -v curl >/dev/null 2>&1 && curl -fsS --max-time 1 "$dashboardUrl" >/dev/null 2>&1; then break; fi
     attempts=$((attempts + 1)); sleep 1
   done
-  [ "$attempts" -lt 20 ] && ok "Server is ready at $dashboardUrl" || warn "Server is still starting. Check $dataDir/server.log"
+  if [ "$attempts" -lt 20 ]; then ok "Server is ready at $dashboardUrl"
+  else warn "Server is still starting. Check $dataDir/server.log"; fi
 fi
 
 say "\n${green}Velron is ready.${reset}"
