@@ -176,49 +176,77 @@ function Remove-StartupShortcut {
     }
 }
 
-function Install-HostPlugin([ValidateSet('codex', 'claude')][string]$HostName, [string]$MarketplaceDirectory) {
-    if ($HostName -eq 'codex') {
-        if (Get-Command codex -ErrorAction SilentlyContinue) {
-            try {
-                & codex plugin marketplace add $MarketplaceDirectory
-                if ($LASTEXITCODE -ne 0) { throw "Codex marketplace command exited with $LASTEXITCODE" }
-                & codex plugin add 'velron@velron-local'
-                if ($LASTEXITCODE -ne 0) { throw "Codex plugin command exited with $LASTEXITCODE" }
-                Write-Success 'Installed the Velron plugin for Codex'
-            } catch {
-                Write-WarningMessage "Codex plugin registration did not finish: $($_.Exception.Message)"
-                Write-Host "  codex plugin marketplace add `"$MarketplaceDirectory`""
-                Write-Host '  codex plugin add velron@velron-local'
-            }
-        } else {
-            Write-WarningMessage 'Codex CLI was not found. After installing it, run:'
-            Write-Host "  codex plugin marketplace add `"$MarketplaceDirectory`""
-            Write-Host '  codex plugin add velron@velron-local'
-        }
+function Invoke-HostCommandSilently([string]$HostName, [string[]]$Arguments) {
+    # Host diagnostics may include configured environment variables and tokens.
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $HostName @Arguments *> $null
+        return $LASTEXITCODE
+    } catch {
+        return -1
+    }
+}
+
+function Install-HostMcp(
+    [ValidateSet('codex', 'claude')][string]$HostName,
+    [string]$ClientPath,
+    [System.Collections.IDictionary]$ClientEnvironment,
+    [string]$ConfigPath
+) {
+    $hostLabel = if ($HostName -eq 'codex') { 'Codex' } else { 'Claude Code' }
+    $commandArguments = if ($HostName -eq 'codex') {
+        @('mcp', 'add', 'velron')
+    } else {
+        @('mcp', 'add', '--transport', 'stdio', '--scope', 'user', 'velron')
+    }
+    $commandText = "$HostName $($commandArguments -join ' ')"
+    foreach ($name in $ClientEnvironment.Keys) {
+        $commandArguments += @('--env', "$name=$($ClientEnvironment[$name])")
+        # Print references to the installed user environment, never its secret values.
+        $commandText += ' --env "{0}=$env:{0}"' -f $name
+    }
+    $commandArguments += @('--', $ClientPath, 'mcp')
+    $quotedClientPath = "'" + $ClientPath.Replace("'", "''") + "'"
+    $commandText += " -- $quotedClientPath mcp"
+
+    if (-not (Get-Command $HostName -ErrorAction SilentlyContinue)) {
+        Write-WarningMessage "$hostLabel CLI was not found. Install it, open a new terminal, and run:"
+        Write-Host "  $commandText"
+        Write-Info "The equivalent stdio MCP configuration is saved at $ConfigPath"
         return
     }
 
-    if (Get-Command claude -ErrorAction SilentlyContinue) {
-        try {
-            & claude plugin marketplace add $MarketplaceDirectory --scope user
-            if ($LASTEXITCODE -ne 0) { throw "Claude marketplace command exited with $LASTEXITCODE" }
-            & claude plugin install 'velron@velron-local' --scope user
-            if ($LASTEXITCODE -ne 0) { throw "Claude plugin command exited with $LASTEXITCODE" }
-            Write-Success 'Installed the Velron plugin for Claude Code'
-        } catch {
-            Write-WarningMessage "Claude Code plugin registration did not finish: $($_.Exception.Message)"
-            Write-Host "  claude plugin marketplace add `"$MarketplaceDirectory`" --scope user"
-            Write-Host '  claude plugin install velron@velron-local --scope user'
+    if ((Invoke-HostCommandSilently $HostName @('mcp', 'get', '--help')) -ne 0) {
+        Write-WarningMessage "Could not inspect $hostLabel MCP settings. Check existing entries, then run:"
+        Write-Host "  $commandText"
+        return
+    }
+
+    if ((Invoke-HostCommandSilently $HostName @('mcp', 'get', 'velron')) -eq 0) {
+        Write-WarningMessage "$hostLabel already has a velron MCP entry; it was preserved."
+        Write-Host "  Review it with: $HostName mcp get velron"
+        if ($HostName -eq 'codex') {
+            Write-Host '  To replace that entry, first run: codex mcp remove velron'
+        } else {
+            Write-Host '  To replace that entry, first run: claude mcp remove velron'
+            Write-Host '  Select the existing entry''s scope if prompted.'
         }
+        Write-Host '  Then register the new Client with:'
+        Write-Host "  $commandText"
+        return
+    }
+
+    if ((Invoke-HostCommandSilently $HostName $commandArguments) -eq 0) {
+        Write-Success "Registered Velron as a stdio MCP server for $hostLabel"
     } else {
-        Write-WarningMessage 'Claude Code CLI was not found. After installing it, run:'
-        Write-Host "  claude plugin marketplace add `"$MarketplaceDirectory`" --scope user"
-        Write-Host '  claude plugin install velron@velron-local --scope user'
+        Write-WarningMessage "$hostLabel MCP registration did not finish. Review the host settings, then run:"
+        Write-Host "  $commandText"
+        Write-Info "The equivalent stdio MCP configuration is saved at $ConfigPath"
     }
 }
 
 Write-Host 'Velron installer' -ForegroundColor Blue
-Write-Host 'Server, Client, host plugins, PATH, and startup setup'
+Write-Host 'Server, Client, stdio MCP, PATH, and startup setup'
 
 $architecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
 $architectureName = switch ($architecture) {
@@ -235,10 +263,6 @@ $defaultVelronHome = Join-Path $HOME '.velron'
 $velronHome = Resolve-AbsolutePath (Read-Value 'Velron data and configuration directory' $defaultVelronHome)
 $defaultInstallDirectory = Join-Path $env:LOCALAPPDATA 'Programs\Velron\bin'
 $installDirectory = Resolve-AbsolutePath (Read-Value 'Command directory (added to PATH)' $defaultInstallDirectory)
-$unsafeClientPathPattern = '[\x00-\x1f\x7f''"%!^&|<>()$`]'
-if ($installClient -and $installDirectory -match $unsafeClientPathPattern) {
-    throw 'The Windows command directory contains characters that cannot be safely used by the Velron Hook.'
-}
 
 $serverHost = '127.0.0.1'
 $serverHttpPort = $defaultHttpPort
@@ -273,7 +297,6 @@ if ($installServer) {
 $vcpMode = 'local'
 $vcpUrl = "wss://127.0.0.1:$serverVcpPort/vcp/v1"
 $vcpToken = ''
-$fixedWorkspace = ''
 $integrationChoice = 0
 if ($installClient) {
     Write-Host ''
@@ -295,16 +318,7 @@ if ($installClient) {
         'Codex and Claude Code',
         'Other... (generic stdio MCP)'
     )
-    if ($integrationChoice -eq 4 -or (Read-Confirmation 'Always restrict this Client to one workspace directory?' $false)) {
-        while ($true) {
-            $workspaceCandidate = Resolve-AbsolutePath (Read-Value 'Workspace directory for this stdio connection' (Get-Location).Path)
-            if (Test-Path -LiteralPath $workspaceCandidate -PathType Container) {
-                $fixedWorkspace = (Resolve-Path -LiteralPath $workspaceCandidate).Path
-                break
-            }
-            Write-WarningMessage "Directory does not exist: $workspaceCandidate"
-        }
-    }
+    Write-Info 'The agent supplies the absolute workspaceDir path in each call_agent invocation.'
 }
 
 Write-Host ''
@@ -348,7 +362,6 @@ try {
             Set-OptionalUserEnvironment 'VELRON_VCP_URL' ''
             Set-OptionalUserEnvironment 'VELRON_VCP_TOKEN' ''
         }
-        Set-OptionalUserEnvironment 'VELRON_WORKSPACE_ROOT' $fixedWorkspace
     }
 
     if ($installServer -and $writeServerConfig) {
@@ -370,38 +383,37 @@ try {
     Write-Success 'Added Velron commands to the user PATH'
 
     if ($installClient) {
-        Write-Info 'Generating the signed local plugin marketplace...'
-        & $clientPath setup-plugin --client-path $clientPath
-        if ($LASTEXITCODE -ne 0) { throw "Velron plugin setup exited with $LASTEXITCODE" }
-        $marketplaceDirectory = Join-Path $velronHome 'plugin-marketplace'
-        switch ($integrationChoice) {
-            1 { Install-HostPlugin codex $marketplaceDirectory }
-            2 { Install-HostPlugin claude $marketplaceDirectory }
-            3 {
-                Install-HostPlugin codex $marketplaceDirectory
-                Install-HostPlugin claude $marketplaceDirectory
-            }
-            4 {
-                $environment = [ordered]@{ VELRON_HOME = $velronHome }
-                if ($vcpMode -eq 'remote') {
-                    $environment['VELRON_VCP_URL'] = $vcpUrl
-                    $environment['VELRON_VCP_TOKEN'] = $vcpToken
+        $clientEnvironment = [ordered]@{ VELRON_HOME = $velronHome }
+        if ($vcpMode -eq 'remote') {
+            $clientEnvironment['VELRON_VCP_URL'] = $vcpUrl
+            $clientEnvironment['VELRON_VCP_TOKEN'] = $vcpToken
+        }
+        $stdioConfig = [ordered]@{
+            mcpServers = [ordered]@{
+                velron = [ordered]@{
+                    type = 'stdio'
+                    command = $clientPath
+                    args = @('mcp')
+                    env = $clientEnvironment
                 }
-                $environment['VELRON_WORKSPACE_ROOT'] = $fixedWorkspace
-                $otherConfig = [ordered]@{
-                    mcpServers = [ordered]@{
-                        velron = [ordered]@{
-                            command = $clientPath
-                            args = @()
-                            env = $environment
-                        }
-                    }
-                }
-                $otherConfigPath = Join-Path $velronHome 'stdio-mcp.json'
-                Write-PrivateUtf8File $otherConfigPath (($otherConfig | ConvertTo-Json -Depth 8) + "`n")
-                Write-Success "Wrote generic stdio MCP configuration to $otherConfigPath"
             }
         }
+        $stdioConfigPath = Join-Path $velronHome 'stdio-mcp.json'
+        Write-PrivateUtf8File $stdioConfigPath (($stdioConfig | ConvertTo-Json -Depth 8) + "`n")
+        Write-Success "Wrote generic stdio MCP configuration to $stdioConfigPath"
+        switch ($integrationChoice) {
+            1 { Install-HostMcp codex $clientPath $clientEnvironment $stdioConfigPath }
+            2 { Install-HostMcp claude $clientPath $clientEnvironment $stdioConfigPath }
+            3 {
+                Install-HostMcp codex $clientPath $clientEnvironment $stdioConfigPath
+                Install-HostMcp claude $clientPath $clientEnvironment $stdioConfigPath
+            }
+            4 {
+                Write-Info "Merge the velron entry from $stdioConfigPath into your MCP host settings."
+            }
+        }
+        Write-Info 'If upgrading from the old Plugin, remove its host Plugin and Velron PreToolUse Hook registrations manually, then restart the host.'
+        Write-Info 'call_agent accepts workspaceDir as an absolute path on the Client machine; no workspace setup or Hook approval is required.'
     }
 
     if ($installServer) {
@@ -427,6 +439,4 @@ Write-Success 'Velron installation is complete.'
 Write-Host 'Open a new terminal, then run:'
 if ($installServer) { Write-Host '  velron' }
 if ($installClient) { Write-Host '  velron-client --help' }
-if ($integrationChoice -in @(1, 3)) {
-    Write-WarningMessage 'Start a new Codex session, open /hooks, and trust the Velron PreToolUse Hook only after checking its absolute Client path.'
-}
+if ($installClient) { Write-Host 'Restart your MCP host to load the stdio connection.' }

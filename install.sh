@@ -6,6 +6,18 @@ LATEST_BASE_URL="https://github.com/$REPOSITORY/releases/latest/download"
 DEFAULT_HTTP_PORT="4141"
 DEFAULT_VCP_PORT="4143"
 
+case "${1:-}" in
+  --help|-h)
+    printf '%s\n' 'Usage: sh install.sh' \
+      'Interactive Velron Server and stdio MCP Client installer for Linux and macOS.' \
+      'Choose Codex, Claude Code, or another stdio MCP host.' \
+      'Pass an absolute workspaceDir to call_agent when using workspace tools.'
+    exit 0
+    ;;
+  '') ;;
+  *) printf '%s\n' "Unknown option: $1" >&2; exit 2 ;;
+esac
+
 if [ -r /dev/tty ] && [ -w /dev/tty ]; then
   TTY=/dev/tty
 else
@@ -111,7 +123,7 @@ confirm() {
 expand_home() {
   case "$1" in
     '~') printf '%s' "$HOME" ;;
-    '~/'*) printf '%s/%s' "$HOME" "${1#\~/}" ;;
+    \~/*) printf '%s/%s' "$HOME" "${1#\~/}" ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -182,6 +194,8 @@ allowed_hosts_json() {
   old_ifs=$IFS
   IFS=','
   set -f
+  # Split the comma-delimited host list deliberately; globbing is disabled above.
+  # shellcheck disable=SC2086
   set -- $allowed_source
   set +f
   IFS=$old_ifs
@@ -325,40 +339,51 @@ remove_autostart() {
   fi
 }
 
-install_host_plugin() {
-  plugin_host=$1
-  marketplace=$2
-  if [ "$plugin_host" = codex ]; then
-    if command -v codex >/dev/null 2>&1; then
-      if codex plugin marketplace add "$marketplace" && codex plugin add velron@velron-local; then
-        success "Installed the Velron plugin for Codex"
-      else
-        warn "Codex plugin registration did not finish. Run: codex plugin marketplace add $(shell_quote "$marketplace")"
-        warn "Then run: codex plugin add velron@velron-local"
-      fi
+printHostMcpCommand() {
+  if [ "$1" = codex ]; then
+    printf '  codex mcp add velron -- %s mcp\n' "$(shell_quote "$CLIENT_COMMAND")"
+  else
+    printf '  claude mcp add --transport stdio --scope user velron -- %s mcp\n' "$(shell_quote "$CLIENT_COMMAND")"
+  fi
+}
+
+installHostMcp() {
+  mcpHost=$1
+  if ! command -v "$mcpHost" >/dev/null 2>&1; then
+    warn "$mcpHost CLI was not found. After installing it, run:"
+    printHostMcpCommand "$mcpHost"
+    return
+  fi
+  if ! "$mcpHost" mcp get --help >/dev/null 2>&1; then
+    warn "Could not inspect $mcpHost MCP settings. Register Velron manually after checking existing entries:"
+    printHostMcpCommand "$mcpHost"
+    return
+  fi
+  if "$mcpHost" mcp get velron >/dev/null 2>&1; then
+    warn "Preserved the existing $mcpHost MCP entry named velron. Review its command and settings before replacing it."
+    info "After removing only the old Velron entry in that host, register the installed Client with:"
+    printHostMcpCommand "$mcpHost"
+    return
+  fi
+  if [ "$mcpHost" = codex ]; then
+    if codex mcp add velron -- "$CLIENT_COMMAND" mcp >/dev/null 2>&1; then
+      success "Registered Velron as a stdio MCP server for Codex"
     else
-      warn "Codex CLI was not found. After installing it, run:"
-      say "  codex plugin marketplace add $(shell_quote "$marketplace")"
-      say "  codex plugin add velron@velron-local"
+      warn "Codex MCP registration did not finish. Check its MCP settings, then run:"
+      printHostMcpCommand codex
     fi
   else
-    if command -v claude >/dev/null 2>&1; then
-      if claude plugin marketplace add "$marketplace" --scope user && claude plugin install velron@velron-local --scope user; then
-        success "Installed the Velron plugin for Claude Code"
-      else
-        warn "Claude Code plugin registration did not finish. Run: claude plugin marketplace add $(shell_quote "$marketplace") --scope user"
-        warn "Then run: claude plugin install velron@velron-local --scope user"
-      fi
+    if claude mcp add --transport stdio --scope user velron -- "$CLIENT_COMMAND" mcp >/dev/null 2>&1; then
+      success "Registered Velron as a stdio MCP server for Claude Code"
     else
-      warn "Claude Code CLI was not found. After installing it, run:"
-      say "  claude plugin marketplace add $(shell_quote "$marketplace") --scope user"
-      say "  claude plugin install velron@velron-local --scope user"
+      warn "Claude Code MCP registration did not finish. Check its MCP settings, then run:"
+      printHostMcpCommand claude
     fi
   fi
 }
 
 say "${BLUE}${BOLD}Velron installer${RESET}"
-say "Server, Client, host plugins, PATH, and startup setup"
+say "Server, stdio MCP Client, PATH, and startup setup"
 
 case "$(uname -s)" in
   Linux) OS_NAME=linux ;;
@@ -423,7 +448,6 @@ fi
 VCP_MODE=local
 VCP_URL="wss://127.0.0.1:$SERVER_VCP_PORT/vcp/v1"
 VCP_TOKEN=''
-FIXED_WORKSPACE=''
 INTEGRATION_CHOICE=0
 if [ "$INSTALL_CLIENT" = true ]; then
   say ""
@@ -451,21 +475,7 @@ if [ "$INSTALL_CLIENT" = true ]; then
   fi
 
   INTEGRATION_CHOICE=$(menu "Where should Velron Client be connected?" "Codex" "Claude Code" "Codex and Claude Code" "Other... (generic stdio MCP)")
-  if [ "$INTEGRATION_CHOICE" = 4 ]; then
-    workspace_default=$(pwd -P)
-    while :; do
-      FIXED_WORKSPACE=$(absolute_path "$(prompt "Workspace directory for this stdio connection" "$workspace_default")")
-      [ -d "$FIXED_WORKSPACE" ] && break
-      warn "Directory does not exist: $FIXED_WORKSPACE"
-    done
-  elif confirm "Always restrict this Client to one workspace directory?" no; then
-    workspace_default=$(pwd -P)
-    while :; do
-      FIXED_WORKSPACE=$(absolute_path "$(prompt "Fixed workspace directory" "$workspace_default")")
-      [ -d "$FIXED_WORKSPACE" ] && break
-      warn "Directory does not exist: $FIXED_WORKSPACE"
-    done
-  fi
+  info "Workspace tools use the absolute call_agent.workspaceDir supplied by your MCP host for each call."
 fi
 
 say ""
@@ -543,9 +553,6 @@ if [ "$INSTALL_CLIENT" = true ]; then
   if [ "$VCP_MODE" = remote ]; then
     client_env_content="${client_env_content}VELRON_VCP_URL=$(shell_quote "$VCP_URL")\nVELRON_VCP_TOKEN=$(shell_quote "$VCP_TOKEN")\n"
   fi
-  if [ -n "$FIXED_WORKSPACE" ]; then
-    client_env_content="${client_env_content}VELRON_WORKSPACE_ROOT=$(shell_quote "$FIXED_WORKSPACE")\n"
-  fi
   write_private_file "$CLIENT_ENV_PATH" "$(printf '%b' "$client_env_content")"
   write_launcher "$CLIENT_COMMAND" "$CLIENT_RUNTIME" "$CLIENT_ENV_PATH"
 fi
@@ -554,40 +561,27 @@ ensure_path "$COMMAND_DIR"
 success "Added Velron commands to PATH"
 
 if [ "$INSTALL_CLIENT" = true ]; then
-  info "Generating the signed local plugin marketplace..."
-  "$CLIENT_COMMAND" setup-plugin --client-path "$CLIENT_COMMAND"
-  MARKETPLACE_DIR="$VELRON_HOME_PATH/plugin-marketplace"
-  case "$INTEGRATION_CHOICE" in
-    1) install_host_plugin codex "$MARKETPLACE_DIR" ;;
-    2) install_host_plugin claude "$MARKETPLACE_DIR" ;;
-    3) install_host_plugin codex "$MARKETPLACE_DIR"; install_host_plugin claude "$MARKETPLACE_DIR" ;;
-    4)
-      OTHER_CONFIG="$VELRON_HOME_PATH/stdio-mcp.json"
-      env_json="\"VELRON_HOME\": \"$(json_escape "$VELRON_HOME_PATH")\""
-      if [ "$VCP_MODE" = remote ]; then
-        env_json="$env_json,
-        \"VELRON_VCP_URL\": \"$(json_escape "$VCP_URL")\",
-        \"VELRON_VCP_TOKEN\": \"$(json_escape "$VCP_TOKEN")\""
-      fi
-      env_json="$env_json,
-        \"VELRON_WORKSPACE_ROOT\": \"$(json_escape "$FIXED_WORKSPACE")\""
-      other_json=$(cat <<EOF
+  OTHER_CONFIG="$VELRON_HOME_PATH/stdio-mcp.json"
+  other_json=$(cat <<EOF
 {
   "mcpServers": {
     "velron": {
+      "type": "stdio",
       "command": "$(json_escape "$CLIENT_COMMAND")",
-      "args": [],
-      "env": {
-        $env_json
-      }
+      "args": ["mcp"]
     }
   }
 }
 EOF
 )
-      write_private_file "$OTHER_CONFIG" "$other_json"
-      success "Wrote generic stdio MCP configuration to $OTHER_CONFIG"
-      ;;
+  write_private_file "$OTHER_CONFIG" "$other_json"
+  success "Wrote stdio MCP configuration to $OTHER_CONFIG"
+  info "The installed Client launcher reads connection settings from $CLIENT_ENV_PATH."
+  case "$INTEGRATION_CHOICE" in
+    1) installHostMcp codex ;;
+    2) installHostMcp claude ;;
+    3) installHostMcp codex; installHostMcp claude ;;
+    4) info "Merge the velron entry from this JSON into your MCP host settings; keep other entries." ;;
   esac
 fi
 
@@ -617,6 +611,8 @@ success "Velron installation is complete."
 say "Open a new terminal, then run:"
 [ "$INSTALL_SERVER" = true ] && say "  velron"
 [ "$INSTALL_CLIENT" = true ] && say "  velron-client --help"
-if [ "$INTEGRATION_CHOICE" = 1 ] || [ "$INTEGRATION_CHOICE" = 3 ]; then
-  warn "Start a new Codex session, open /hooks, and trust the Velron PreToolUse Hook only after checking its absolute Client path."
+if [ "$INSTALL_CLIENT" = true ]; then
+  info "Restart your MCP host to load the stdio Client and its new call_agent schema."
+  info "For workspace tools, pass the existing project directory's absolute path as call_agent.workspaceDir."
+  info "If upgrading from a Velron plugin, remove that old host plugin and any separately registered Velron PreToolUse Hook or duplicate MCP entry. The installer does not change those settings."
 fi

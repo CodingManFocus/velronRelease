@@ -24,8 +24,8 @@ Both commands open an interactive terminal wizard. It lets you:
 - choose the Velron data directory and command directory;
 - configure the Server bind host, management port, pinned local VCP port, and allowed hosts;
 - view or replace the Client VCP URL and securely enter the token required by a remote Server;
-- install the generated Velron plugin for Codex, Claude Code, or both;
-- generate a generic stdio MCP configuration for another host and restrict it to a selected workspace;
+- register the stdio Velron Client for Codex, Claude Code, or both;
+- generate a generic stdio MCP configuration for another host;
 - add `velron` and `velron-client` to the user `PATH`;
 - register Velron Server to start when the user signs in, and optionally start it immediately.
 
@@ -45,16 +45,41 @@ All locations can be changed in the wizard where doing so is safe. The Server st
 uses a per-user Startup shortcut on Windows, a LaunchAgent on macOS, and a systemd user service
 (or desktop autostart fallback) on Linux.
 
-## Plugin security step
+## MCP connection and workspace paths
 
-The installer asks Velron Client to generate a local marketplace whose MCP command and
-`PreToolUse` Hook pin the installed Client by absolute path. After installing for Codex, start a
-new Codex session, open `/hooks`, confirm the absolute path, and trust the generated Hook. Until it
-is trusted, pathless Agents still work, while workspace-enabled VCP Agents fail safely with
-`vcp_context_required`.
+Velron Client is a regular stdio MCP server. The installer registers the absolute Client command with
+`codex mcp add` or `claude mcp add --transport stdio --scope user`. It uses the host CLI to update its
+configuration and preserves any existing MCP entry named `velron` for you to review. If a selected CLI
+is unavailable or cannot register the entry, the installer prints a command to run after resolving it.
 
-If the selected Codex or Claude Code CLI is not on `PATH`, installation still succeeds and the
-wizard prints the exact plugin registration commands to run later.
+The installer also saves `stdio-mcp.json` in the chosen Velron data directory for manual setup. Merge
+its `velron` entry into the host's existing `mcpServers` object without replacing unrelated entries.
+On macOS/Linux the registered launcher reads `client.env` from that data directory. On Windows the
+installer configures the connection environment. Restart your MCP host after installation.
+
+For Agents that use VCP workspace tools, supply `workspaceDir` in each `call_agent` invocation. It must
+be the absolute path of an existing project directory on the computer running Velron Client. Agents
+without workspace tools may omit it. The installer no longer asks for a fixed project directory.
+
+```json
+{
+  "agentId": "code-scout",
+  "prompt": "Inspect this project's structure.",
+  "workspaceDir": "/home/user/projects/example"
+}
+```
+
+On Windows, use a path such as `C:\\Users\\user\\projects\\example` in JSON. Relative paths such as
+`.` and `../project` are rejected. The MCP caller selects this directory; it is not a signed claim
+about the host's current working directory.
+
+When upgrading from an older Velron plugin, remove that plugin from Codex or Claude Code. Also remove
+any separately registered Velron `PreToolUse` Hook and duplicate MCP entry, then register the new
+stdio entry and restart the host. The installer does not automatically delete host plugins or Hooks.
+The old `setup-plugin` and `hook` commands and the `VELRON_WORKSPACE_ROOT` fallback are no longer used.
+
+Host configuration details: [Codex MCP](https://developers.openai.com/codex/mcp) and
+[Claude Code MCP](https://code.claude.com/docs/en/mcp-quickstart).
 
 ## Manual downloads
 
