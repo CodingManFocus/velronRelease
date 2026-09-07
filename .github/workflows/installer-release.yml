@@ -1,0 +1,186 @@
+name: Installer release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'installer/**'
+      - '.github/workflows/installer-release.yml'
+  pull_request:
+    paths:
+      - 'installer/**'
+      - '.github/workflows/installer-release.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: false
+      - name: Build native Windows launchers
+        shell: pwsh
+        working-directory: installer/windows
+        run: |
+          New-Item -ItemType Directory -Force ../../dist | Out-Null
+          $env:CGO_ENABLED = '0'
+          $env:GOOS = 'windows'
+          foreach ($target in @(@{ Go = 'amd64'; Asset = 'x64' }, @{ Go = 'arm64'; Asset = 'arm64' })) {
+            $env:GOARCH = $target.Go
+            go build -trimpath -ldflags='-s -w' -o "../../dist/Velron-Installer-windows-$($target.Asset).exe" .
+            if ($LASTEXITCODE -ne 0) { throw 'Windows launcher build failed.' }
+          }
+          $command = & ../../dist/Velron-Installer-windows-x64.exe --print-command
+          if ($LASTEXITCODE -ne 0 -or $command -ne 'irm https://raw.githubusercontent.com/CodingManFocus/velronRelease/main/install.ps1 | iex') {
+            throw 'Windows launcher smoke check failed.'
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-windows
+          path: dist/*.exe
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify shared launcher
+        run: |
+          sh -n installer/unix/run-wizard.sh
+          python3 installer/tests/test_unix_launcher.py
+      - name: Build universal macOS app
+        run: |
+          mkdir -p dist build
+          bundle='build/Velron Installer.app'
+          osacompile -o "$bundle" installer/macos/launcher.applescript
+          cp installer/unix/run-wizard.sh "$bundle/Contents/Resources/run-wizard.sh"
+          chmod 755 "$bundle/Contents/Resources/run-wizard.sh"
+          python3 - <<'PY'
+          import pathlib, plistlib
+          path = pathlib.Path('build/Velron Installer.app/Contents/Info.plist')
+          info = plistlib.loads(path.read_bytes())
+          info.update(CFBundleName='Velron Installer', CFBundleIdentifier='kr.codenamemc.velron.installer',
+                      NSAppleEventsUsageDescription='Velron Installer opens Terminal to run the installation wizard.')
+          path.write_bytes(plistlib.dumps(info))
+          PY
+          lipo -verify_arch x86_64 arm64 "$bundle/Contents/MacOS/applet"
+          codesign --force --deep --sign - "$bundle"
+          codesign --verify --deep --strict "$bundle"
+          ditto -c -k --sequesterRsrc --keepParent "$bundle" dist/Velron-Installer-macos-universal.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-macos
+          path: dist/*.zip
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check launcher behavior
+        run: |
+          sh -n installer/unix/run-wizard.sh
+          sh -n installer/linux/launch.sh
+          shellcheck -s sh installer/unix/run-wizard.sh installer/linux/launch.sh
+          python3 installer/tests/test_unix_launcher.py
+      - name: Package Linux launcher
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y desktop-file-utils
+          desktop-file-validate installer/linux/Velron-Installer.desktop
+          mkdir -p 'build/Velron Installer' dist
+          cp installer/linux/launch.sh installer/linux/Velron-Installer.desktop installer/unix/run-wizard.sh 'build/Velron Installer/'
+          cp installer/README.md LICENSE 'build/Velron Installer/'
+          chmod 755 'build/Velron Installer/'*.sh 'build/Velron Installer/'*.desktop
+          tar -czf dist/Velron-Installer-linux.tar.gz -C build 'Velron Installer'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-linux
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: installer-*
+          merge-multiple: true
+          path: dist
+      - name: Publish dedicated installer assets
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('node:fs');
+            const crypto = require('node:crypto');
+            const { owner, repo } = context.repo;
+            const tag = 'installer-latest';
+            const files = [
+              'Velron-Installer-windows-x64.exe',
+              'Velron-Installer-windows-arm64.exe',
+              'Velron-Installer-macos-universal.zip',
+              'Velron-Installer-linux.tar.gz',
+            ];
+            const sums = files.map(name => {
+              const data = fs.readFileSync(`dist/${name}`);
+              if (!data.length) throw new Error(`Empty artifact: ${name}`);
+              return `${crypto.createHash('sha256').update(data).digest('hex')}  ${name}`;
+            }).join('\n') + '\n';
+            fs.writeFileSync('dist/SHA256SUMS-installers.txt', sums);
+            files.push('SHA256SUMS-installers.txt');
+            const body = [
+              'Open an Installer to launch the same interactive wizard as One-line install.',
+              'These launchers require an internet connection; they do not contain Server or Client binaries.',
+              '',
+              '- Windows: open the x64 or ARM64 executable for your PC.',
+              '- macOS: extract the ZIP, then open Velron Installer.app. Allow Terminal access when asked.',
+              '- Linux: extract the archive, then open Velron-Installer.desktop (allow launching if asked).',
+              '',
+              'Windows and macOS launchers do not have a trusted publisher signature. Your OS may request approval.',
+              'The regular application release remains available at /releases/latest.',
+              '',
+              `Source: ${context.sha}`,
+            ].join('\n');
+            let release;
+            try {
+              release = (await github.rest.repos.getReleaseByTag({ owner, repo, tag })).data;
+              release = (await github.rest.repos.updateRelease({
+                owner, repo, release_id: release.id, name: 'Velron Installer', body,
+                draft: false, prerelease: false, make_latest: 'false',
+              })).data;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              release = (await github.rest.repos.createRelease({
+                owner, repo, tag_name: tag, target_commitish: context.sha,
+                name: 'Velron Installer', body, draft: false, prerelease: false,
+                make_latest: 'false',
+              })).data;
+            }
+            const existing = await github.paginate(github.rest.repos.listReleaseAssets, {
+              owner, repo, release_id: release.id, per_page: 100,
+            });
+            for (const name of files) {
+              const old = existing.find(asset => asset.name === name);
+              if (old) await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: old.id });
+              await github.rest.repos.uploadReleaseAsset({
+                owner, repo, release_id: release.id, name, data: fs.readFileSync(`dist/${name}`),
+              });
+            }
+            await github.rest.git.updateRef({ owner, repo, ref: `tags/${tag}`, sha: context.sha, force: true });
+            const latest = (await github.rest.repos.getLatestRelease({ owner, repo })).data;
+            if (latest.tag_name === tag) throw new Error('Installer release unexpectedly replaced the latest application release.');
+            core.summary.addLink('Download Velron Installer', release.html_url).write();
