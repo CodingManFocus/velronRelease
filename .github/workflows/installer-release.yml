@@ -73,7 +73,7 @@ jobs:
                       NSAppleEventsUsageDescription='Velron Installer opens Terminal to run the installation wizard.')
           path.write_bytes(plistlib.dumps(info))
           PY
-          lipo -verify_arch x86_64 arm64 "$bundle/Contents/MacOS/applet"
+          lipo "$bundle/Contents/MacOS/applet" -verify_arch x86_64 arm64
           codesign --force --deep --sign - "$bundle"
           codesign --verify --deep --strict "$bundle"
           ditto -c -k --sequesterRsrc --keepParent "$bundle" dist/Velron-Installer-macos-universal.zip

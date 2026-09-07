@@ -17,7 +17,7 @@ finish() {
     printf '\nThe installation wizard has closed.\n'
   fi
   printf 'Press Enter to close...'
-  IFS= read -r ignored || true
+  IFS= read -r _ignored || true
   exit "$result"
 }
 
