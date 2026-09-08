@@ -40,6 +40,12 @@ The `Installer release` workflow publishes the existing stable filenames under `
 
 Use a desktop OS supported by the pinned Electron version. Linux needs the usual GTK/NSS desktop
 libraries and Chromium sandbox support. The launcher does not disable the sandbox. The Electron
+archive uses unprivileged user namespaces where the OS permits them. On systems that restrict
+them, a system administrator must configure the included `chrome-sandbox` helper (root ownership
+and mode `4755`) in the selected architecture's directory before the GUI can launch.
+CI configures that helper for its native checks, then removes privileged permissions before
+creating the portable archive.
+The Electron
 runtime makes downloads larger than the previous terminal launchers. Windows and macOS do not
 yet have a trusted publisher signature/notarization; normal OS security prompts still apply.
 

@@ -105,11 +105,21 @@ jobs:
       - run: npm test
       - run: npx playwright install --with-deps chromium
       - run: npm run test:ui
+      - name: Prepare Linux sandbox
+        run: |
+          node -e "require('electron')"
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
       - run: xvfb-run -a node tests/nativeSmoke.cjs
       - run: npm run build:linux
       - name: Check and package Linux applications
         run: |
+          sudo chown root:root ../dist/linux-unpacked/chrome-sandbox
+          sudo chmod 4755 ../dist/linux-unpacked/chrome-sandbox
           VELRON_SMOKE_EXECUTABLE="$PWD/../dist/linux-unpacked/velron-installer" xvfb-run -a node tests/nativeSmoke.cjs
+          # The portable archive must not carry a privileged, CI-owned helper.
+          sudo chmod 755 ../dist/linux-unpacked/chrome-sandbox
+          sudo chown "$(id -u):$(id -g)" ../dist/linux-unpacked/chrome-sandbox
           sh -n linux/launch.sh
           shellcheck -s sh linux/launch.sh ../install.sh
           sudo apt-get update
