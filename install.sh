@@ -5,6 +5,7 @@ REPOSITORY="CodingManFocus/velronRelease"
 LATEST_BASE_URL="https://github.com/$REPOSITORY/releases/latest/download"
 DEFAULT_HTTP_PORT="4141"
 DEFAULT_VCP_PORT="4143"
+NON_INTERACTIVE=false
 
 case "${1:-}" in
   --help|-h)
@@ -14,11 +15,14 @@ case "${1:-}" in
       'Pass an absolute workspaceDir to call_agent when using workspace tools.'
     exit 0
     ;;
+  --non-interactive) NON_INTERACTIVE=true ;;
   '') ;;
   *) printf '%s\n' "Unknown option: $1" >&2; exit 2 ;;
 esac
 
-if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+if [ "$NON_INTERACTIVE" = true ]; then
+  TTY=/dev/null
+elif [ -r /dev/tty ] && [ -w /dev/tty ]; then
   TTY=/dev/tty
 else
   printf '%s\n' "Velron installer requires an interactive terminal." >&2
@@ -46,6 +50,71 @@ info() { say "${BLUE}i${RESET} $*"; }
 success() { say "${GREEN}✓${RESET} $*"; }
 warn() { say "${YELLOW}!${RESET} $*"; }
 die() { say "${RED}Error:${RESET} $*" >&2; exit 1; }
+stage() { [ "$NON_INTERACTIVE" = false ] || printf 'VELRON_INSTALL_STAGE:%s\n' "$1"; }
+
+# The desktop UI supplies data through the child environment, never shell source.
+read_gui_settings() {
+  INSTALL_SERVER=false
+  INSTALL_CLIENT=false
+  case "${VELRON_INSTALL_COMPONENTS:-}" in
+    both) INSTALL_SERVER=true; INSTALL_CLIENT=true ;;
+    server) INSTALL_SERVER=true ;;
+    client) INSTALL_CLIENT=true ;;
+    *) die "Choose Server, Client, or both." ;;
+  esac
+  VELRON_HOME_PATH=$(absolute_path "${VELRON_INSTALL_HOME:?Missing Velron directory}")
+  COMMAND_DIR=$(absolute_path "${VELRON_INSTALL_COMMAND_DIR:?Missing command directory}")
+  RUNTIME_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/velron/bin"
+  SERVER_ENV_PATH="$VELRON_HOME_PATH/server.env"
+  CLIENT_ENV_PATH="$VELRON_HOME_PATH/client.env"
+  SERVER_HOST=${VELRON_INSTALL_SERVER_HOST:-127.0.0.1}
+  SERVER_HTTP_PORT=${VELRON_INSTALL_HTTP_PORT:-4141}
+  SERVER_VCP_PORT=${VELRON_INSTALL_VCP_PORT:-4143}
+  SERVER_ALLOWED_HOSTS=${VELRON_INSTALL_ALLOWED_HOSTS:-}
+  ENABLE_AUTOSTART=${VELRON_INSTALL_AUTOSTART:-false}
+  START_SERVER_NOW=${VELRON_INSTALL_START_NOW:-false}
+  keep_config=${VELRON_INSTALL_KEEP_CONFIG:-true}
+  for flag in "$ENABLE_AUTOSTART" "$START_SERVER_NOW" "$keep_config"; do
+    case "$flag" in true|false) ;; *) die "Invalid boolean installation setting." ;; esac
+  done
+  WRITE_SERVER_CONFIG=true
+  if [ "$keep_config" = true ] && [ -f "$VELRON_HOME_PATH/config.json" ]; then
+    WRITE_SERVER_CONFIG=false
+  fi
+  case "$SERVER_HOST" in ''|*[!A-Za-z0-9.:'['\]_-]*) die "Invalid server bind host." ;; esac
+  valid_port "$SERVER_HTTP_PORT" || die "Invalid HTTP port."
+  valid_port "$SERVER_VCP_PORT" || die "Invalid VCP port."
+  [ "$SERVER_HTTP_PORT" != "$SERVER_VCP_PORT" ] || die "HTTP and VCP ports must differ."
+  allowed_hosts_json "$SERVER_ALLOWED_HOSTS" >/dev/null
+  VCP_MODE=${VELRON_INSTALL_CONNECTION:-local}
+  VCP_URL="wss://127.0.0.1:$SERVER_VCP_PORT/vcp/v1"
+  VCP_TOKEN=''
+  case "$VCP_MODE" in
+    local) ;;
+    remote)
+      VCP_URL=${VELRON_INSTALL_VCP_URL:-}
+      VCP_TOKEN=${VELRON_INSTALL_VCP_TOKEN:-}
+      case "$VCP_URL" in wss://*) ;; *) die "Remote VCP URL must use wss://." ;; esac
+      case "$VCP_URL" in *'?'*|*'#'*|wss://*@*) die "Invalid VCP URL." ;; esac
+      vcp_remainder=${VCP_URL#wss://}
+      vcp_authority=${vcp_remainder%%/*}
+      vcp_path=/${vcp_remainder#*/}
+      if [ -z "$vcp_authority" ] || [ "$vcp_authority" = "$vcp_remainder" ] || [ "$vcp_path" != /vcp/v1 ]; then
+        die "Remote VCP URL must target exactly /vcp/v1."
+      fi
+      case "$VCP_TOKEN" in *[!A-Za-z0-9_-]*|'') die "Invalid VCP token." ;; esac
+      [ "${#VCP_TOKEN}" -eq 43 ] || die "VCP token must be exactly 43 characters."
+      ;;
+    *) die "Invalid connection mode." ;;
+  esac
+  case "${VELRON_INSTALL_INTEGRATION:-}" in
+    codex) INTEGRATION_CHOICE=1 ;;
+    claude) INTEGRATION_CHOICE=2 ;;
+    both) INTEGRATION_CHOICE=3 ;;
+    other) INTEGRATION_CHOICE=4 ;;
+    *) die "Invalid MCP host selection." ;;
+  esac
+}
 
 prompt() {
   prompt_label=$1
@@ -396,6 +465,9 @@ case "$(uname -m)" in
   *) die "Unsupported architecture: $(uname -m)" ;;
 esac
 
+if [ "$NON_INTERACTIVE" = true ]; then
+  read_gui_settings
+else
 install_choice=$(menu "What do you want to install?" "Server and Client" "Server only" "Client only")
 INSTALL_SERVER=false
 INSTALL_CLIENT=false
@@ -463,8 +535,9 @@ if [ "$INSTALL_CLIENT" = true ]; then
     vcp_remainder=${entered_vcp_url#wss://}
     vcp_authority=${vcp_remainder%%/*}
     vcp_path=/${vcp_remainder#*/}
-    [ -n "$vcp_authority" ] && [ "$vcp_authority" != "$vcp_remainder" ] && [ "$vcp_path" = /vcp/v1 ] \
-      || die "Remote VCP URL must target exactly /vcp/v1."
+    if [ -z "$vcp_authority" ] || [ "$vcp_authority" = "$vcp_remainder" ] || [ "$vcp_path" != /vcp/v1 ]; then
+      die "Remote VCP URL must target exactly /vcp/v1."
+    fi
     VCP_MODE=remote
     VCP_URL=$entered_vcp_url
     VCP_TOKEN=$(secret_prompt "VCP access token")
@@ -488,11 +561,15 @@ if [ "$INSTALL_CLIENT" = true ]; then
   say "  VCP:             $VCP_URL ($VCP_MODE)"
 fi
 confirm "Continue?" yes || { info "Installation cancelled."; exit 0; }
+fi
 
 TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/velron-installer.XXXXXX")
 cleanup() { rm -rf "$TEMP_DIR"; }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' HUP TERM
 SUMS_PATH="$TEMP_DIR/SHA256SUMS.txt"
+stage download
 info "Downloading release checksums..."
 download "$LATEST_BASE_URL/SHA256SUMS.txt" "$SUMS_PATH"
 
@@ -500,6 +577,7 @@ mkdir -p "$RUNTIME_DIR" "$COMMAND_DIR" "$VELRON_HOME_PATH"
 chmod 700 "$VELRON_HOME_PATH"
 
 if [ "$INSTALL_SERVER" = true ]; then
+  stage server
   SERVER_ASSET="velron-$OS_NAME-$ARCH_NAME"
   SERVER_DOWNLOAD="$TEMP_DIR/$SERVER_ASSET"
   info "Downloading $SERVER_ASSET..."
@@ -513,6 +591,7 @@ if [ "$INSTALL_SERVER" = true ]; then
 fi
 
 if [ "$INSTALL_CLIENT" = true ]; then
+  stage client
   CLIENT_ASSET="velron-client-$OS_NAME-$ARCH_NAME"
   CLIENT_DOWNLOAD="$TEMP_DIR/$CLIENT_ASSET"
   info "Downloading $CLIENT_ASSET..."
@@ -525,9 +604,10 @@ if [ "$INSTALL_CLIENT" = true ]; then
   mv -f "$CLIENT_RUNTIME.tmp.$$" "$CLIENT_RUNTIME"
 fi
 
+stage configure
 if [ "$INSTALL_SERVER" = true ]; then
-  server_env_content="VELRON_HOME=$(shell_quote "$VELRON_HOME_PATH")\n"
-  write_private_file "$SERVER_ENV_PATH" "$(printf '%b' "$server_env_content")"
+  server_env_content=$(printf 'VELRON_HOME=%s\n' "$(shell_quote "$VELRON_HOME_PATH")")
+  write_private_file "$SERVER_ENV_PATH" "$server_env_content"
   write_launcher "$SERVER_COMMAND" "$SERVER_RUNTIME" "$SERVER_ENV_PATH"
   if [ "$WRITE_SERVER_CONFIG" = true ]; then
     allowed_json=$(allowed_hosts_json "$SERVER_ALLOWED_HOSTS")
@@ -549,11 +629,11 @@ EOF
   fi
 fi
 if [ "$INSTALL_CLIENT" = true ]; then
-  client_env_content="VELRON_HOME=$(shell_quote "$VELRON_HOME_PATH")\n"
+  client_env_content=$(printf 'VELRON_HOME=%s\n' "$(shell_quote "$VELRON_HOME_PATH")")
   if [ "$VCP_MODE" = remote ]; then
-    client_env_content="${client_env_content}VELRON_VCP_URL=$(shell_quote "$VCP_URL")\nVELRON_VCP_TOKEN=$(shell_quote "$VCP_TOKEN")\n"
+    client_env_content=$(printf '%s\nVELRON_VCP_URL=%s\nVELRON_VCP_TOKEN=%s\n' "$client_env_content" "$(shell_quote "$VCP_URL")" "$(shell_quote "$VCP_TOKEN")")
   fi
-  write_private_file "$CLIENT_ENV_PATH" "$(printf '%b' "$client_env_content")"
+  write_private_file "$CLIENT_ENV_PATH" "$client_env_content"
   write_launcher "$CLIENT_COMMAND" "$CLIENT_RUNTIME" "$CLIENT_ENV_PATH"
 fi
 
@@ -561,6 +641,7 @@ ensure_path "$COMMAND_DIR"
 success "Added Velron commands to PATH"
 
 if [ "$INSTALL_CLIENT" = true ]; then
+  stage integrate
   OTHER_CONFIG="$VELRON_HOME_PATH/stdio-mcp.json"
   other_json=$(cat <<EOF
 {
@@ -586,6 +667,7 @@ EOF
 fi
 
 if [ "$INSTALL_SERVER" = true ]; then
+  stage startup
   if [ "$ENABLE_AUTOSTART" = true ]; then
     configure_autostart "$SERVER_COMMAND"
   else
@@ -608,6 +690,7 @@ fi
 
 say ""
 success "Velron installation is complete."
+stage complete
 say "Open a new terminal, then run:"
 [ "$INSTALL_SERVER" = true ] && say "  velron"
 [ "$INSTALL_CLIENT" = true ] && say "  velron-client --help"

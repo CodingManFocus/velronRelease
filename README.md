@@ -36,8 +36,8 @@ URL must use `wss://`, must end in `/vcp/v1`, and requires a VCP access token.
 
 ## Open the Installer instead
 
-Prefer opening a program to pasting a command? Download an Installer below. It opens a terminal and
-runs the same One-line install wizard, with the same Server, Client, and MCP setup options.
+Prefer a desktop setup window? Download an Installer below. Its Korean/English GUI follows
+Velron’s visual style and provides the same Server, Client, connection, PATH, and startup options.
 An internet connection is required.
 
 | Platform | Installer |
@@ -47,10 +47,11 @@ An internet connection is required.
 | macOS (Apple Silicon / Intel) | [Velron-Installer-macos-universal.zip](https://github.com/CodingManFocus/velronRelease/releases/download/installer-latest/Velron-Installer-macos-universal.zip) |
 | Linux | [Velron-Installer-linux.tar.gz](https://github.com/CodingManFocus/velronRelease/releases/download/installer-latest/Velron-Installer-linux.tar.gz) |
 
-On Windows, open the `.exe`. On macOS, extract the ZIP and open `Velron Installer.app`; allow it to
-open Terminal when asked. On Linux, extract the archive and open `Velron-Installer.desktop` (allow
-launching if your desktop asks), or run `sh launch.sh` in that folder. The terminal stays open when
-the wizard ends so you can read any errors or next steps.
+On Windows, open the `.exe`. On macOS, extract the ZIP and open `Velron Installer.app`.
+On Linux, extract the archive and open `Velron-Installer.desktop` (allow launching if your desktop
+asks), or run `sh launch.sh` in that folder. The same desktop wizard opens on every platform.
+Choose folders and settings, review your choices, then follow progress and any remaining steps
+inside the window. The GUI does not require an interactive terminal.
 
 The Windows and macOS launchers do not yet have a trusted publisher signature; your OS may ask for
 approval before opening them. [Installer details and source](installer/README.md) and
@@ -109,7 +110,7 @@ Host configuration details: [Codex MCP](https://developers.openai.com/codex/mcp)
 Application releases contain Server and Client builds for Windows, macOS, and Linux on x64 and
 arm64, plus `SHA256SUMS.txt`. Downloads are available from the
 [latest release](https://github.com/CodingManFocus/velronRelease/releases/latest).
-Installer launchers are published under their own `installer-latest` tag and do not replace the
+GUI Installers are published under their own `installer-latest` tag and do not replace the
 latest Server and Client release.
 
 Use is subject to the terms in [LICENSE](LICENSE).
