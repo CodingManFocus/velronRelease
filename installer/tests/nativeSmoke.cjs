@@ -1,3 +1,5 @@
+// Keep Electron's launch diagnostics when a CI desktop cannot start.
+if (process.env.CI) process.env.DEBUG = [process.env.DEBUG, 'pw:browser'].filter(Boolean).join(',');
 const { _electron: electron } = require('playwright');
 const assert = require('node:assert/strict');
 const path = require('node:path');

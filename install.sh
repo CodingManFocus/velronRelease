@@ -99,8 +99,9 @@ read_gui_settings() {
       vcp_remainder=${VCP_URL#wss://}
       vcp_authority=${vcp_remainder%%/*}
       vcp_path=/${vcp_remainder#*/}
-      [ -n "$vcp_authority" ] && [ "$vcp_authority" != "$vcp_remainder" ] && [ "$vcp_path" = /vcp/v1 ] \
-        || die "Remote VCP URL must target exactly /vcp/v1."
+      if [ -z "$vcp_authority" ] || [ "$vcp_authority" = "$vcp_remainder" ] || [ "$vcp_path" != /vcp/v1 ]; then
+        die "Remote VCP URL must target exactly /vcp/v1."
+      fi
       case "$VCP_TOKEN" in *[!A-Za-z0-9_-]*|'') die "Invalid VCP token." ;; esac
       [ "${#VCP_TOKEN}" -eq 43 ] || die "VCP token must be exactly 43 characters."
       ;;
@@ -534,8 +535,9 @@ if [ "$INSTALL_CLIENT" = true ]; then
     vcp_remainder=${entered_vcp_url#wss://}
     vcp_authority=${vcp_remainder%%/*}
     vcp_path=/${vcp_remainder#*/}
-    [ -n "$vcp_authority" ] && [ "$vcp_authority" != "$vcp_remainder" ] && [ "$vcp_path" = /vcp/v1 ] \
-      || die "Remote VCP URL must target exactly /vcp/v1."
+    if [ -z "$vcp_authority" ] || [ "$vcp_authority" = "$vcp_remainder" ] || [ "$vcp_path" != /vcp/v1 ]; then
+      die "Remote VCP URL must target exactly /vcp/v1."
+    fi
     VCP_MODE=remote
     VCP_URL=$entered_vcp_url
     VCP_TOKEN=$(secret_prompt "VCP access token")

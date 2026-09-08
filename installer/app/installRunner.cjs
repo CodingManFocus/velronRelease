@@ -34,11 +34,12 @@ function createInstallRunner({ engineDir, onEvent, platform = process.platform, 
       secret = options.vcpToken;
       cancelRequested = false;
       const windows = platform === 'win32';
+      const targetPaths = windows ? path.win32 : path.posix;
       if (windows && !environment.SystemRoot) throw new Error('Windows PowerShell could not be located.');
       const command = windows ? path.win32.join(environment.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') : '/bin/sh';
       const args = windows
-        ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(engineDir, 'install.ps1'), '-NonInteractive']
-        : [path.join(engineDir, 'install.sh'), '--non-interactive'];
+        ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', targetPaths.join(engineDir, 'install.ps1'), '-NonInteractive']
+        : [targetPaths.join(engineDir, 'install.sh'), '--non-interactive'];
       // Remove obsolete installer options inherited from an outer process.
       const env = Object.fromEntries(Object.entries(environment).filter(([key]) => !key.startsWith('VELRON_INSTALL_')));
       Object.assign(env, toEnvironment(options), { NO_COLOR: '1', TERM: 'dumb' });

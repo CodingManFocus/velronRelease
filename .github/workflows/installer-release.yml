@@ -68,6 +68,10 @@ jobs:
       - run: npm test
       - run: node tests/nativeSmoke.cjs
       - run: npm run build:macos
+        env:
+          # package.json explicitly uses the ad-hoc identity; no certificate is loaded.
+          CSC_FOR_PULL_REQUEST: 'true'
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       - name: Check universal application
         run: |
           bundle='../dist/mac-universal/Velron Installer.app'
