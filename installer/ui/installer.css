@@ -1,6 +1,6 @@
 @font-face { font-family: Paperlogy; src: url('assets/Paperlogy-Regular.woff2') format('woff2'); font-weight: 400; font-display: swap; }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--color-bg-canvas); color: var(--color-text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Paperlogy, sans-serif; font-size: 14px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+body { margin: 0; background: var(--color-bg-canvas); color: var(--color-text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Paperlogy, sans-serif; font-synthesis: weight; font-size: 14px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
 button, input, select { font: inherit; color: inherit; }
 button, select, input[type=radio], input[type=checkbox] { cursor: pointer; }
 button { border: 0; }
