@@ -1,45 +1,83 @@
-# Velron Installer launchers
+# Velron desktop Installer
 
-These launchers only open the existing One-line install wizard. They do not duplicate its
-installation logic, require administrator access, or bundle Velron Server or Client. An internet
-connection is required. Installation options, checksums, stdio MCP configuration, and startup
-registration remain implemented by the root `install.ps1` and `install.sh` scripts.
+A native desktop window with one shared Korean/English interface for Windows, macOS, and Linux.
+The interface uses Velron's light palette, blue accent, rounded controls, logo, and Paperlogy
+wordmark. The Electron runtime is included; users do not install Node.js or open a terminal.
 
-## Downloads
+## Installation flow
 
-The `Installer release` workflow publishes these assets under the fixed `installer-latest` tag:
+1. Choose Server + Client, Server only, or Client only.
+2. Pick the data/configuration and command folders with native directory dialogs or enter paths.
+3. Keep existing Server settings, or set the bind host, HTTP/VCP ports, and allowed hosts.
+   Choose sign-in startup and whether to start the Server immediately.
+4. Use automatic local discovery or enter a remote `wss://.../vcp/v1` address and access token.
+   Connect Codex, Claude Code, both, or another stdio MCP host.
+5. Review settings and install. Follow real engine phases and logs in the same window.
+6. Open Velron, find the MCP configuration file, and review remaining integration steps.
 
-| File | How to open |
+Only relevant steps appear for the selected components. Existing MCP entries are preserved.
+Unavailable CLIs and registration failures are shown as follow-up work, with full instructions
+in the expanded log. Cancellation stops the installer process tree; already-installed files and
+settings remain. Errors offer log copying and a return to the review step for another attempt.
+
+The GUI bundles the root `install.sh` and `install.ps1` from the same commit. It invokes their
+`--non-interactive` / `-NonInteractive` mode with validated `VELRON_INSTALL_*` environment values.
+Both UI modes share checksum verification, download, configuration, PATH, MCP, and startup logic.
+The normal One-line install remains interactive. Server/Client binaries are downloaded from the
+latest application release, so an internet connection is required.
+
+## Downloads and compatibility
+
+The `Installer release` workflow publishes the existing stable filenames under `installer-latest`:
+
+| File | Platform |
 | --- | --- |
-| `Velron-Installer-windows-x64.exe` | Double-click on an Intel/AMD Windows PC. |
-| `Velron-Installer-windows-arm64.exe` | Double-click on an ARM Windows PC. |
-| `Velron-Installer-macos-universal.zip` | Extract, then open `Velron Installer.app` on Apple Silicon or Intel. |
-| `Velron-Installer-linux.tar.gz` | Extract, allow launching `Velron-Installer.desktop` if your desktop asks, then open it. You can also run `sh launch.sh` in the extracted folder. |
-| `SHA256SUMS-installers.txt` | SHA-256 checksums for all four downloads. |
+| `Velron-Installer-windows-x64.exe` | Windows x64, portable GUI executable |
+| `Velron-Installer-windows-arm64.exe` | Windows ARM64, portable GUI executable |
+| `Velron-Installer-macos-universal.zip` | Apple Silicon and Intel, containing `Velron Installer.app` |
+| `Velron-Installer-linux.tar.gz` | x64 and ARM64 applications plus an architecture-selecting desktop launcher |
+| `SHA256SUMS-installers.txt` | SHA-256 checksums for all four downloads |
 
-The macOS app requests permission to open Terminal on first use. The Windows and macOS launchers
-are currently unsigned, so OS reputation or app security checks may require explicit approval.
-One-line install remains available when local policy does not allow opening these launchers.
-Neither launcher changes operating-system security settings.
+Use a desktop OS supported by the pinned Electron version. Linux needs the usual GTK/NSS desktop
+libraries and Chromium sandbox support. The launcher does not disable the sandbox. The Electron
+runtime makes downloads larger than the previous terminal launchers. Windows and macOS do not
+yet have a trusted publisher signature/notarization; normal OS security prompts still apply.
 
-The dedicated release always uses `make_latest: "false"`, preserving the main application's
-`releases/latest` URL used by the installation scripts. All release updates explicitly repeat this
-flag. Application release workflows should continue to publish their own versioned releases.
+## Development
 
-## Build and checks
+```sh
+cd installer
+npm ci
+npm start
+npm test
+npx playwright install chromium
+npm run test:ui
+node tests/nativeSmoke.cjs
+```
 
-- Windows: Go 1.26 or newer, standard library only. From `installer/windows`, use
-  `GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o Velron-Installer-windows-x64.exe .`.
-  Use `GOARCH=arm64` for ARM. These are console executables without a separately installed runtime.
-- macOS: the workflow compiles the AppleScript with `osacompile`, bundles `run-wizard.sh`, verifies
-  that the applet supports both architectures, and archives the app with `ditto`.
-- Linux: the workflow packages the desktop entry and shell launchers, preserving executable bits.
-- `python3 installer/tests/test_unix_launcher.py` verifies successful execution, partial-download
-  failure, empty downloads, exit status, input forwarding, path quoting, and temporary-file cleanup
-  with a fake downloader. It never installs Velron or makes network requests.
-- Each launcher supports `--print-command` where it has a command-line interface. This prints the
-  official command without downloading or executing anything.
+On Linux CI, run the native smoke check with `xvfb-run -a`. `VELRON_SMOKE_EXECUTABLE` selects a
+packaged executable for that check. `VELRON_TEST_CHROMIUM` optionally selects a local Chromium
+for UI tests. Engine tests use temporary directories and fake downloads, and do not install
+Velron onto the developer's account. Native smoke tests open the real window and verify the
+sandboxed bridge and input validation without starting an installation.
 
-The workflow builds and checks pull requests without publishing. A push to `main` touching launcher
-sources or the workflow, or a manual run on `main`, publishes the reviewed artifacts. `contents: write`
-is granted only to the publish job; build jobs have read-only repository access.
+Build on the corresponding OS with `npm run build:windows`, `npm run build:macos`, or
+`npm run build:linux`. CI packages both Linux architectures into the shared archive, builds a
+universal macOS application, checks native source and packaged windows, and captures screenshots.
+Pull requests build downloadable workflow artifacts without updating public releases. A merge
+to `main` publishes after all three OS jobs pass. Every installer release write keeps
+`make_latest: "false"`, preserving the application's `/releases/latest` download URLs.
+
+## Implementation boundaries
+
+- `app/installOptions.cjs`: defaults, validation, and conversion to environment values.
+- `app/installRunner.cjs`: fixed engine invocation, phases/logs, token redaction, cancellation.
+- `app/main.cjs`: native window, file dialogs, allowlisted IPC, and completion actions.
+- `app/preload.cjs`: narrow context-isolated bridge; no arbitrary command or filesystem access.
+- `ui/`: local-only interface, translations, design tokens, and licensed branding assets.
+- Root scripts: shared installation engine with an additional non-interactive input adapter.
+
+The renderer has no Node integration, network access, navigation, child windows, or requested
+permissions. Tokens are passed only in the child environment and redacted from retained logs;
+UI preferences and tokens are not saved by the Installer. The installed Client's connection
+configuration behavior remains the responsibility of the shared engine.

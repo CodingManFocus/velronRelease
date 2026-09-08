@@ -1,11 +1,27 @@
+param([switch]$NonInteractive)
+
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+if ($NonInteractive) {
+    $ProgressPreference = 'SilentlyContinue'
+    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+}
 
 $repository = 'CodingManFocus/velronRelease'
 $latestBaseUrl = "https://github.com/$repository/releases/latest/download"
 $defaultHttpPort = 4141
 $defaultVcpPort = 4143
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+
+function Write-Stage([string]$Name) {
+    if ($NonInteractive) { Write-Output "VELRON_INSTALL_STAGE:$Name" }
+}
+
+function Read-GuiBoolean([string]$Name) {
+    $value = [Environment]::GetEnvironmentVariable("VELRON_INSTALL_$Name")
+    if ($value -notin @('true', 'false')) { throw "Invalid boolean setting: $Name" }
+    return $value -eq 'true'
+}
 
 function Write-Info([string]$Message) {
     Write-Host 'i ' -ForegroundColor Blue -NoNewline
@@ -255,6 +271,41 @@ $architectureName = switch ($architecture) {
     default { throw "Unsupported Windows architecture: $architecture" }
 }
 
+if ($NonInteractive) {
+    if ($env:VELRON_INSTALL_COMPONENTS -notin @('both', 'server', 'client')) { throw 'Invalid component selection.' }
+    $installServer = $env:VELRON_INSTALL_COMPONENTS -in @('both', 'server')
+    $installClient = $env:VELRON_INSTALL_COMPONENTS -in @('both', 'client')
+    $velronHome = Resolve-AbsolutePath $env:VELRON_INSTALL_HOME
+    $installDirectory = Resolve-AbsolutePath $env:VELRON_INSTALL_COMMAND_DIR
+    $serverHost = $env:VELRON_INSTALL_SERVER_HOST
+    $serverHttpPort = [int]$env:VELRON_INSTALL_HTTP_PORT
+    $serverVcpPort = [int]$env:VELRON_INSTALL_VCP_PORT
+    if ($serverHttpPort -lt 1 -or $serverHttpPort -gt 65535 -or $serverVcpPort -lt 1 -or $serverVcpPort -gt 65535 -or $serverHttpPort -eq $serverVcpPort) {
+        throw 'HTTP and VCP ports must be distinct integers from 1 to 65535.'
+    }
+    if ($serverHost -notmatch '^[A-Za-z0-9.:\[\]_-]+$') { throw 'Invalid server bind host.' }
+    $serverAllowedHosts = @($env:VELRON_INSTALL_ALLOWED_HOSTS -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    foreach ($allowedHost in $serverAllowedHosts) {
+        if ($allowedHost -notmatch '^[A-Za-z0-9.:\[\]_-]+$') { throw 'Invalid allowed host.' }
+    }
+    $keepConfig = Read-GuiBoolean 'KEEP_CONFIG'
+    $writeServerConfig = -not ($keepConfig -and (Test-Path -LiteralPath (Join-Path $velronHome 'config.json') -PathType Leaf))
+    $enableAutostart = Read-GuiBoolean 'AUTOSTART'
+    $startServerNow = Read-GuiBoolean 'START_NOW'
+    $vcpMode = $env:VELRON_INSTALL_CONNECTION
+    $vcpUrl = "wss://127.0.0.1:$serverVcpPort/vcp/v1"
+    $vcpToken = ''
+    if ($vcpMode -eq 'remote') {
+        $vcpUrl = $env:VELRON_INSTALL_VCP_URL
+        Assert-VcpUrl $vcpUrl
+        $vcpToken = $env:VELRON_INSTALL_VCP_TOKEN
+        if ($vcpToken -notmatch '^[A-Za-z0-9_-]{43}$') { throw 'Invalid VCP access token.' }
+    } elseif ($vcpMode -ne 'local') { throw 'Invalid connection mode.' }
+    $integrationChoice = switch ($env:VELRON_INSTALL_INTEGRATION) {
+        'codex' { 1 }; 'claude' { 2 }; 'both' { 3 }; 'other' { 4 }
+        default { throw 'Invalid MCP host selection.' }
+    }
+} else {
 $installChoice = Read-Menu 'What do you want to install?' @('Server and Client', 'Server only', 'Client only')
 $installServer = $installChoice -in @(1, 2)
 $installClient = $installChoice -in @(1, 3)
@@ -333,11 +384,13 @@ if (-not (Read-Confirmation 'Continue?' $true)) {
     Write-Info 'Installation cancelled.'
     return
 }
+}
 
 $temporaryDirectory = Join-Path ([IO.Path]::GetTempPath()) "velron-installer-$([guid]::NewGuid().ToString('N'))"
 [IO.Directory]::CreateDirectory($temporaryDirectory) | Out-Null
 try {
     $checksumsPath = Join-Path $temporaryDirectory 'SHA256SUMS.txt'
+    Write-Stage 'download'
     Write-Info 'Downloading release checksums...'
     Invoke-WebRequest -UseBasicParsing -Uri "$latestBaseUrl/SHA256SUMS.txt" -OutFile $checksumsPath
     [IO.Directory]::CreateDirectory($installDirectory) | Out-Null
@@ -346,12 +399,15 @@ try {
     $serverPath = Join-Path $installDirectory 'velron.exe'
     $clientPath = Join-Path $installDirectory 'velron-client.exe'
     if ($installServer) {
+        Write-Stage 'server'
         Install-VerifiedAsset "velron-windows-$architectureName.exe" $serverPath $checksumsPath $temporaryDirectory
     }
     if ($installClient) {
+        Write-Stage 'client'
         Install-VerifiedAsset "velron-client-windows-$architectureName.exe" $clientPath $checksumsPath $temporaryDirectory
     }
 
+    Write-Stage 'configure'
     [Environment]::SetEnvironmentVariable('VELRON_HOME', $velronHome, 'User')
     [Environment]::SetEnvironmentVariable('VELRON_HOME', $velronHome, 'Process')
     if ($installClient) {
@@ -384,6 +440,7 @@ try {
 
     if ($installClient) {
         $clientEnvironment = [ordered]@{ VELRON_HOME = $velronHome }
+        Write-Stage 'integrate'
         if ($vcpMode -eq 'remote') {
             $clientEnvironment['VELRON_VCP_URL'] = $vcpUrl
             $clientEnvironment['VELRON_VCP_TOKEN'] = $vcpToken
@@ -417,6 +474,7 @@ try {
     }
 
     if ($installServer) {
+        Write-Stage 'startup'
         if ($enableAutostart) {
             Install-StartupShortcut $serverPath $installDirectory
         } else {
@@ -424,7 +482,11 @@ try {
             Write-Info 'Velron Server autostart is disabled'
         }
         if ($startServerNow) {
-            Start-Process -FilePath $serverPath -WorkingDirectory $installDirectory
+            if ($NonInteractive) {
+                Start-Process -FilePath $serverPath -WorkingDirectory $installDirectory -WindowStyle Hidden
+            } else {
+                Start-Process -FilePath $serverPath -WorkingDirectory $installDirectory
+            }
             Write-Success 'Started Velron Server'
         }
     }
@@ -436,6 +498,7 @@ try {
 
 Write-Host ''
 Write-Success 'Velron installation is complete.'
+Write-Stage 'complete'
 Write-Host 'Open a new terminal, then run:'
 if ($installServer) { Write-Host '  velron' }
 if ($installClient) { Write-Host '  velron-client --help' }

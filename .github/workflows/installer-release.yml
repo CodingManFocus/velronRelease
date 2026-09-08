@@ -4,13 +4,9 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths:
-      - 'installer/**'
-      - '.github/workflows/installer-release.yml'
+    paths: ['installer/**', 'install.sh', 'install.ps1', '.github/workflows/installer-release.yml']
   pull_request:
-    paths:
-      - 'installer/**'
-      - '.github/workflows/installer-release.yml'
+    paths: ['installer/**', 'install.sh', 'install.ps1', '.github/workflows/installer-release.yml']
 
 permissions:
   contents: read
@@ -22,92 +18,116 @@ concurrency:
 jobs:
   windows:
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: installer
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-node@v4
         with:
-          go-version: '1.26.x'
-          cache: false
-      - name: Build native Windows launchers
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: installer/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - name: Check PowerShell GUI input adapter
         shell: pwsh
-        working-directory: installer/windows
+        run: ./tests/testPowerShellAdapter.ps1
+      - run: node tests/nativeSmoke.cjs
+      - run: npm run build:windows
+      - name: Check packaged Windows application
+        shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force ../../dist | Out-Null
-          $env:CGO_ENABLED = '0'
-          $env:GOOS = 'windows'
-          foreach ($target in @(@{ Go = 'amd64'; Asset = 'x64' }, @{ Go = 'arm64'; Asset = 'arm64' })) {
-            $env:GOARCH = $target.Go
-            go build -trimpath -ldflags='-s -w' -o "../../dist/Velron-Installer-windows-$($target.Asset).exe" .
-            if ($LASTEXITCODE -ne 0) { throw 'Windows launcher build failed.' }
-          }
-          $command = & ../../dist/Velron-Installer-windows-x64.exe --print-command
-          if ($LASTEXITCODE -ne 0 -or $command -ne 'irm https://raw.githubusercontent.com/CodingManFocus/velronRelease/main/install.ps1 | iex') {
-            throw 'Windows launcher smoke check failed.'
-          }
+          $env:VELRON_SMOKE_EXECUTABLE = (Resolve-Path '../dist/win-unpacked/Velron Installer.exe').Path
+          node tests/nativeSmoke.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged Windows smoke test failed.' }
       - uses: actions/upload-artifact@v4
         with:
           name: installer-windows
           path: dist/*.exe
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gui-checks-windows
+          path: installer/test-results/
 
   macos:
     runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: installer
     steps:
       - uses: actions/checkout@v4
-      - name: Verify shared launcher
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: installer/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: node tests/nativeSmoke.cjs
+      - run: npm run build:macos
+      - name: Check universal application
         run: |
-          sh -n installer/unix/run-wizard.sh
-          python3 installer/tests/test_unix_launcher.py
-      - name: Build universal macOS app
-        run: |
-          mkdir -p dist build
-          bundle='build/Velron Installer.app'
-          osacompile -o "$bundle" installer/macos/launcher.applescript
-          cp installer/unix/run-wizard.sh "$bundle/Contents/Resources/run-wizard.sh"
-          chmod 755 "$bundle/Contents/Resources/run-wizard.sh"
-          python3 - <<'PY'
-          import pathlib, plistlib
-          path = pathlib.Path('build/Velron Installer.app/Contents/Info.plist')
-          info = plistlib.loads(path.read_bytes())
-          info.update(CFBundleName='Velron Installer', CFBundleIdentifier='kr.codenamemc.velron.installer',
-                      NSAppleEventsUsageDescription='Velron Installer opens Terminal to run the installation wizard.')
-          path.write_bytes(plistlib.dumps(info))
-          PY
-          lipo "$bundle/Contents/MacOS/applet" -verify_arch x86_64 arm64
-          codesign --force --deep --sign - "$bundle"
+          bundle='../dist/mac-universal/Velron Installer.app'
+          lipo "$bundle/Contents/MacOS/Velron Installer" -verify_arch x86_64 arm64
           codesign --verify --deep --strict "$bundle"
-          ditto -c -k --sequesterRsrc --keepParent "$bundle" dist/Velron-Installer-macos-universal.zip
+          VELRON_SMOKE_EXECUTABLE="$PWD/$bundle/Contents/MacOS/Velron Installer" node tests/nativeSmoke.cjs
       - uses: actions/upload-artifact@v4
         with:
           name: installer-macos
           path: dist/*.zip
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gui-checks-macos
+          path: installer/test-results/
 
   linux:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: installer
     steps:
       - uses: actions/checkout@v4
-      - name: Check launcher behavior
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: installer/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:ui
+      - run: xvfb-run -a node tests/nativeSmoke.cjs
+      - run: npm run build:linux
+      - name: Check and package Linux applications
         run: |
-          sh -n installer/unix/run-wizard.sh
-          sh -n installer/linux/launch.sh
-          shellcheck -s sh installer/unix/run-wizard.sh installer/linux/launch.sh
-          python3 installer/tests/test_unix_launcher.py
-      - name: Package Linux launcher
-        run: |
+          VELRON_SMOKE_EXECUTABLE="$PWD/../dist/linux-unpacked/velron-installer" xvfb-run -a node tests/nativeSmoke.cjs
+          sh -n linux/launch.sh
+          shellcheck -s sh linux/launch.sh ../install.sh
           sudo apt-get update
           sudo apt-get install -y desktop-file-utils
-          desktop-file-validate installer/linux/Velron-Installer.desktop
-          mkdir -p 'build/Velron Installer' dist
-          cp installer/linux/launch.sh installer/linux/Velron-Installer.desktop installer/unix/run-wizard.sh 'build/Velron Installer/'
-          cp installer/README.md LICENSE 'build/Velron Installer/'
-          chmod 755 'build/Velron Installer/'*.sh 'build/Velron Installer/'*.desktop
-          tar -czf dist/Velron-Installer-linux.tar.gz -C build 'Velron Installer'
+          desktop-file-validate linux/Velron-Installer.desktop
+          bundle='../build/Velron Installer'
+          mkdir -p "$bundle/x64" "$bundle/arm64"
+          cp -a ../dist/linux-unpacked/. "$bundle/x64/"
+          cp -a ../dist/linux-arm64-unpacked/. "$bundle/arm64/"
+          cp linux/launch.sh linux/Velron-Installer.desktop README.md ../LICENSE "$bundle/"
+          chmod 755 "$bundle/launch.sh" "$bundle/Velron-Installer.desktop"
+          tar -czf ../dist/Velron-Installer-linux.tar.gz -C ../build 'Velron Installer'
       - uses: actions/upload-artifact@v4
         with:
           name: installer-linux
           path: dist/*.tar.gz
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gui-checks-linux
+          path: installer/test-results/
 
   publish:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -143,11 +163,11 @@ jobs:
             fs.writeFileSync('dist/SHA256SUMS-installers.txt', sums);
             files.push('SHA256SUMS-installers.txt');
             const body = [
-              'Open an Installer to launch the same interactive wizard as One-line install.',
-              'These launchers require an internet connection; they do not contain Server or Client binaries.',
+              'Install Velron in a consistent desktop GUI on Windows, macOS, and Linux.',
+              'The GUI uses the bundled One-line install engine and downloads verified Server and Client binaries.',
               '',
               '- Windows: open the x64 or ARM64 executable for your PC.',
-              '- macOS: extract the ZIP, then open Velron Installer.app. Allow Terminal access when asked.',
+              '- macOS: extract the ZIP, then open Velron Installer.app. No Terminal access is needed.',
               '- Linux: extract the archive, then open Velron-Installer.desktop (allow launching if asked).',
               '',
               'Windows and macOS launchers do not have a trusted publisher signature. Your OS may request approval.',
