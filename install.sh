@@ -81,7 +81,7 @@ read_gui_settings() {
   if [ "$keep_config" = true ] && [ -f "$VELRON_HOME_PATH/config.json" ]; then
     WRITE_SERVER_CONFIG=false
   fi
-  case "$SERVER_HOST" in ''|*[!A-Za-z0-9.:'['\]_-]*) die "Invalid server bind host." ;; esac
+  valid_host "$SERVER_HOST" bind || die "Invalid server bind host."
   valid_port "$SERVER_HTTP_PORT" || die "Invalid HTTP port."
   valid_port "$SERVER_VCP_PORT" || die "Invalid VCP port."
   [ "$SERVER_HTTP_PORT" != "$SERVER_VCP_PORT" ] || die "HTTP and VCP ports must differ."
@@ -198,7 +198,7 @@ expand_home() {
 }
 
 absolute_path() {
-  path_value=$(expand_home "$1")
+  path_value=$(expand_home "$(trim "$1")")
   case "$path_value" in
     /*) printf '%s' "$path_value" ;;
     *) die "Path must be absolute: $path_value" ;;
@@ -208,6 +208,111 @@ absolute_path() {
 valid_port() {
   case "$1" in ''|*[!0-9]*) return 1 ;; esac
   [ "$1" -ge 1 ] 2>/dev/null && [ "$1" -le 65535 ] 2>/dev/null
+}
+
+# Match the runtime's IP/DNS policy without requiring Node or Python on user PCs.
+valid_host() {
+  printf '%s\n' "$1" | awk -v kind="$2" '
+    function ipv4(v, parts, n, i) {
+      n=split(v,parts,"."); if(n!=4) return 0
+      for(i=1;i<=n;i++) if(parts[i]!~/^[0-9]+$/ || length(parts[i])>3 ||
+        (length(parts[i])>1 && substr(parts[i],1,1)=="0") || parts[i]+0>255) return 0
+      return 1
+    }
+    {
+      v=$0; if(length(v)<1 || length(v)>253) exit 1
+      if(v~/^\[/ || v~/\]$/) {
+        if(kind!="allowed" || v!~/^\[.*\]$/) exit 1
+        v=substr(v,2,length(v)-2); if(index(v,":")==0) exit 1
+      }
+      if(index(v,":")>0) {
+        if(v!~/^[0-9a-fA-F:.]+$/ || v~/:::/ || v~/^:[^:]/ || v~/[^:]:$/) exit 1
+        if(index(v,".")>0) {
+          n=split(v,a,":"); tail=a[n]; if(!ipv4(tail)) exit 1
+          v=substr(v,1,length(v)-length(tail)) "0:0"
+        }
+        copy=v; compression=gsub(/::/,":",copy); if(compression>1) exit 1
+        n=split(copy,a,":"); groups=0
+        for(i=1;i<=n;i++) if(a[i]!="") {
+          if(a[i]!~/^[0-9a-fA-F]+$/ || length(a[i])>4) exit 1
+          groups++
+        }
+        exit !((compression==1 && groups<8) || (compression==0 && groups==8))
+      }
+      n=split(v,a,".")
+      for(i=1;i<=n;i++) if(length(a[i])<1 || length(a[i])>63 ||
+        a[i]!~/^[A-Za-z0-9][A-Za-z0-9-]*$/ || a[i]~/-$/) exit 1
+    }'
+}
+
+canonical_path() (
+  canonical_value=$1
+  if [ -d "$canonical_value" ]; then cd -P "$canonical_value" && pwd -P; return; fi
+  canonical_value=${canonical_value%/}
+  canonical_parent=$(dirname "$canonical_value")
+  canonical_name=$(basename "$canonical_value")
+  [ "$canonical_parent" != "$canonical_value" ] || return 1
+  canonical_parent=$(canonical_path "$canonical_parent") || return 1
+  case "$canonical_name" in
+    .) printf '%s\n' "$canonical_parent" ;;
+    ..) dirname "$canonical_parent" ;;
+    *) printf '%s/%s\n' "${canonical_parent%/}" "$canonical_name" ;;
+  esac
+)
+
+validate_state_home() {
+  state_path=$(canonical_path "$1") || die "Cannot resolve the Velron data directory."
+  state_user_home=$(canonical_path "$HOME") || die "Cannot resolve the user home directory."
+  [ "$state_path" != / ] && [ "$state_path" != "$state_user_home" ] && [ "$state_path" != "$(pwd -P)" ] ||
+    die "Velron data must use a dedicated directory, not the filesystem root, user home, or working directory."
+}
+
+wait_server_ready() {
+  # Existing settings are authoritative when the user elects to preserve them.
+  readiness_host=$SERVER_HOST; readiness_port=$SERVER_HTTP_PORT
+  if [ "$WRITE_SERVER_CONFIG" = false ]; then
+    readiness_host=$(sed -n 's/.*"host"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$VELRON_HOME_PATH/config.json" | head -n 1)
+    readiness_port=$(sed -n 's/.*"port"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$VELRON_HOME_PATH/config.json" | head -n 1)
+  fi
+  if ! valid_host "$readiness_host" bind || ! valid_port "$readiness_port"; then
+    die "Could not determine a valid management address from config.json. Check the Server startup log."
+  fi
+  case "$readiness_host" in 0.0.0.0) readiness_host=127.0.0.1 ;; ::) readiness_host='[::1]' ;; *:*) readiness_host="[$readiness_host]" ;; esac
+  readiness_url="http://$readiness_host:$readiness_port/api/health"
+  readiness_attempt=0
+  while [ "$readiness_attempt" -lt 30 ]; do
+    if [ -n "${STARTED_SERVER_PID:-}" ] && ! kill -0 "$STARTED_SERVER_PID" 2>/dev/null; then
+      die "Velron Server exited before becoming ready. Check $VELRON_HOME_PATH/server-error.log and server.log."
+    fi
+    readiness_body="$TEMP_DIR/readiness.json"
+    rm -f "$readiness_body"
+    readiness_status=0
+    if command -v curl >/dev/null 2>&1; then
+      # No credentials, redirects, proxies, or unlimited response waits.
+      readiness_status=$(curl --silent --noproxy '*' --connect-timeout 1 --max-time 2 --max-filesize 8192 "$readiness_url" -o "$readiness_body" --write-out '%{http_code}' 2>/dev/null) || :
+    else
+      wget --no-proxy --timeout=2 --tries=1 --max-redirect=0 --content-on-error -O "$readiness_body" "$readiness_url" --server-response 2>"$TEMP_DIR/readiness.headers" || :
+      readiness_status=$(awk '/HTTP\/[0-9.]+ [0-9]+/ { code=$2 } END { print code }' "$TEMP_DIR/readiness.headers")
+    fi
+    if [ "$readiness_status" = 401 ] && [ -f "$readiness_body" ] && grep -Eq '"code"[[:space:]]*:[[:space:]]*"management_authentication_required"' "$readiness_body"; then
+      # Catch immediate exits even if another server already occupies the port.
+      sleep 1
+      if [ -n "${STARTED_SERVER_PID:-}" ]; then
+        kill -0 "$STARTED_SERVER_PID" 2>/dev/null || die "Velron Server exited. Check $VELRON_HOME_PATH/server-error.log."
+      elif [ "${AUTOSTART_KIND:-}" = systemd ]; then
+        systemctl --user is-active --quiet velron.service || die "Velron user service is not active. Check journalctl --user -u velron.service."
+      elif [ "${AUTOSTART_KIND:-}" = launchd ]; then
+        launch_pid=$(launchctl print "gui/$(id -u)/com.codenamemc.velron" 2>/dev/null | awk '/^[[:space:]]*pid = [0-9]+/ { print $3; exit }')
+        if [ -z "$launch_pid" ] || ! kill -0 "$launch_pid" 2>/dev/null; then
+          die "Velron LaunchAgent is not running. Check $VELRON_HOME_PATH/server-error.log."
+        fi
+      fi
+      return
+    fi
+    readiness_attempt=$((readiness_attempt + 1))
+    sleep 1
+  done
+  die "Velron Server did not become ready. Check $VELRON_HOME_PATH/server-error.log, server.log, or journalctl --user -u velron.service; confirm the configured ports are available."
 }
 
 json_escape() {
@@ -270,10 +375,13 @@ allowed_hosts_json() {
   IFS=$old_ifs
   allowed_result='['
   allowed_separator=''
+  allowed_count=0
   for allowed_host in "$@"; do
     allowed_host=$(trim "$allowed_host")
     [ -n "$allowed_host" ] || continue
-    case "$allowed_host" in *[!A-Za-z0-9.:'['\]_-]*) die "Invalid allowed host: $allowed_host" ;; esac
+    allowed_count=$((allowed_count + 1))
+    [ "$allowed_count" -le 256 ] || die "At most 256 allowed hosts are supported."
+    valid_host "$allowed_host" allowed || die "Invalid allowed host: $allowed_host"
     allowed_result="$allowed_result$allowed_separator\"$(json_escape "$allowed_host")\""
     allowed_separator=','
   done
@@ -296,7 +404,11 @@ write_launcher() {
   config_path=$3
   launcher_tmp="$launcher_path.tmp.$$"
   {
-    printf '%s\n' '#!/bin/sh' 'set -eu' 'set -a'
+    printf '%s\n' '#!/bin/sh' 'set -eu'
+    if [ "${4:-server}" = client ]; then
+      printf '%s\n' 'unset VELRON_VCP_URL VELRON_VCP_TOKEN VELRON_LOCAL_VCP_PORT'
+    fi
+    printf '%s\n' 'set -a'
     printf '[ ! -f %s ] || . %s\n' "$(shell_quote "$config_path")" "$(shell_quote "$config_path")"
     printf '%s\n' 'set +a'
     printf 'exec %s "$@"\n' "$(shell_quote "$runtime_path")"
@@ -317,13 +429,27 @@ ensure_path() {
       warn "Skipped non-regular shell profile: $profile"
       continue
     fi
-    if [ ! -f "$profile" ] || ! grep -F '# >>> velron >>>' "$profile" >/dev/null 2>&1; then
-      {
-        printf '\n%s\n' '# >>> velron >>>'
-        printf '%s\n' "$path_line"
-        printf '%s\n' '# <<< velron <<<'
-      } >>"$profile"
+    # Replace only the Installer-owned block; preserve all user profile content.
+    profile_tmp="$profile.velron.$$"
+    if [ -f "$profile" ]; then
+      awk '/^# >>> velron >>>$/ { managed=1; next }
+           /^# <<< velron <<<$/{ if (managed) { managed=0; next } }
+           !managed { print }
+           END { if (managed) exit 1 }' "$profile" >"$profile_tmp" || {
+        rm -f "$profile_tmp"
+        die "Unterminated Velron PATH block in $profile; repair it before reinstalling."
+      }
+    else
+      : >"$profile_tmp"
     fi
+    {
+      printf '\n%s\n' '# >>> velron >>>'
+      printf '%s\n' "$path_line"
+      printf '%s\n' '# <<< velron <<<'
+    } >>"$profile_tmp"
+    # Write through the existing profile to preserve symlinks and permissions.
+    cat "$profile_tmp" >"$profile"
+    rm -f "$profile_tmp"
   done
 }
 
@@ -563,8 +689,42 @@ fi
 confirm "Continue?" yes || { info "Installation cancelled."; exit 0; }
 fi
 
+validate_state_home "$VELRON_HOME_PATH"
+if [ "$INSTALL_SERVER" = true ] && [ "$WRITE_SERVER_CONFIG" = true ]; then
+  valid_host "$SERVER_HOST" bind || die "Invalid server bind host."
+  allowed_hosts_json "$SERVER_ALLOWED_HOSTS" >/dev/null
+fi
+
 TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/velron-installer.XXXXXX")
-cleanup() { rm -rf "$TEMP_DIR"; }
+BINARIES_COMMITTED=false
+SERVER_SWAPPING=false
+CLIENT_SWAPPING=false
+cleanup() {
+  cleanup_status=$?
+  for component in server client; do
+    if [ "$component" = server ]; then
+      destination=${SERVER_RUNTIME:-}; swapping=$SERVER_SWAPPING
+    else
+      destination=${CLIENT_RUNTIME:-}; swapping=$CLIENT_SWAPPING
+    fi
+    [ -n "$destination" ] || continue
+    if [ "$BINARIES_COMMITTED" = false ] && [ "$swapping" = true ]; then
+      if [ -f "$destination.previous.$$" ]; then
+        mv -f "$destination.previous.$$" "$destination" || {
+          warn "Could not restore $destination; recover it from $destination.previous.$$" >&2
+          cleanup_status=1
+          continue
+        }
+      else
+        rm -f "$destination" || cleanup_status=1
+      fi
+    fi
+    rm -f "$destination.new.$$" "$destination.previous.$$" || cleanup_status=1
+  done
+  rm -rf "$TEMP_DIR"
+  trap - EXIT
+  exit "$cleanup_status"
+}
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' HUP TERM
@@ -573,9 +733,7 @@ stage download
 info "Downloading release checksums..."
 download "$LATEST_BASE_URL/SHA256SUMS.txt" "$SUMS_PATH"
 
-mkdir -p "$RUNTIME_DIR" "$COMMAND_DIR" "$VELRON_HOME_PATH"
-chmod 700 "$VELRON_HOME_PATH"
-
+# Verify the complete selected set before replacing any installed component.
 if [ "$INSTALL_SERVER" = true ]; then
   stage server
   SERVER_ASSET="velron-$OS_NAME-$ARCH_NAME"
@@ -585,11 +743,7 @@ if [ "$INSTALL_SERVER" = true ]; then
   verify_asset "$SERVER_DOWNLOAD" "$SERVER_ASSET" "$SUMS_PATH"
   SERVER_RUNTIME="$RUNTIME_DIR/velron-runtime"
   SERVER_COMMAND="$COMMAND_DIR/velron"
-  cp "$SERVER_DOWNLOAD" "$SERVER_RUNTIME.tmp.$$"
-  chmod 755 "$SERVER_RUNTIME.tmp.$$"
-  mv -f "$SERVER_RUNTIME.tmp.$$" "$SERVER_RUNTIME"
 fi
-
 if [ "$INSTALL_CLIENT" = true ]; then
   stage client
   CLIENT_ASSET="velron-client-$OS_NAME-$ARCH_NAME"
@@ -599,10 +753,35 @@ if [ "$INSTALL_CLIENT" = true ]; then
   verify_asset "$CLIENT_DOWNLOAD" "$CLIENT_ASSET" "$SUMS_PATH"
   CLIENT_RUNTIME="$RUNTIME_DIR/velron-client-runtime"
   CLIENT_COMMAND="$COMMAND_DIR/velron-client"
-  cp "$CLIENT_DOWNLOAD" "$CLIENT_RUNTIME.tmp.$$"
-  chmod 755 "$CLIENT_RUNTIME.tmp.$$"
-  mv -f "$CLIENT_RUNTIME.tmp.$$" "$CLIENT_RUNTIME"
 fi
+
+mkdir -p "$RUNTIME_DIR" "$COMMAND_DIR" "$VELRON_HOME_PATH"
+chmod 700 "$VELRON_HOME_PATH"
+# Stage on the destination filesystem and keep prior binaries until both swaps finish.
+for component in server client; do
+  if [ "$component" = server ]; then
+    [ "$INSTALL_SERVER" = true ] || continue
+    destination=$SERVER_RUNTIME; source=$SERVER_DOWNLOAD
+  else
+    [ "$INSTALL_CLIENT" = true ] || continue
+    destination=$CLIENT_RUNTIME; source=$CLIENT_DOWNLOAD
+  fi
+  [ ! -d "$destination" ] || die "Runtime destination is a directory: $destination"
+  cp "$source" "$destination.new.$$"
+  chmod 755 "$destination.new.$$"
+  if [ -e "$destination" ]; then cp -p "$destination" "$destination.previous.$$"; fi
+done
+for component in server client; do
+  if [ "$component" = server ]; then
+    [ "$INSTALL_SERVER" = true ] || continue
+    SERVER_SWAPPING=true; destination=$SERVER_RUNTIME
+  else
+    [ "$INSTALL_CLIENT" = true ] || continue
+    CLIENT_SWAPPING=true; destination=$CLIENT_RUNTIME
+  fi
+  mv -f "$destination.new.$$" "$destination"
+done
+BINARIES_COMMITTED=true
 
 stage configure
 if [ "$INSTALL_SERVER" = true ]; then
@@ -634,7 +813,7 @@ if [ "$INSTALL_CLIENT" = true ]; then
     client_env_content=$(printf '%s\nVELRON_VCP_URL=%s\nVELRON_VCP_TOKEN=%s\n' "$client_env_content" "$(shell_quote "$VCP_URL")" "$(shell_quote "$VCP_TOKEN")")
   fi
   write_private_file "$CLIENT_ENV_PATH" "$client_env_content"
-  write_launcher "$CLIENT_COMMAND" "$CLIENT_RUNTIME" "$CLIENT_ENV_PATH"
+  write_launcher "$CLIENT_COMMAND" "$CLIENT_RUNTIME" "$CLIENT_ENV_PATH" client
 fi
 
 ensure_path "$COMMAND_DIR"
@@ -679,12 +858,15 @@ if [ "$INSTALL_SERVER" = true ]; then
       systemctl --user restart velron.service
     elif [ "${AUTOSTART_KIND:-}" = launchd ]; then
       launchctl bootout "gui/$(id -u)/com.codenamemc.velron" >/dev/null 2>&1 || true
-      launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.codenamemc.velron.plist" >/dev/null 2>&1 || warn "LaunchAgent was written but could not be loaded in this terminal."
-      launchctl kickstart -k "gui/$(id -u)/com.codenamemc.velron" >/dev/null 2>&1 || true
+      launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.codenamemc.velron.plist" >/dev/null 2>&1 || die "LaunchAgent could not be loaded. Check launchctl diagnostics and retry."
+      launchctl kickstart -k "gui/$(id -u)/com.codenamemc.velron" >/dev/null 2>&1 || die "LaunchAgent could not be started."
     else
       nohup "$SERVER_COMMAND" >"$VELRON_HOME_PATH/server.log" 2>"$VELRON_HOME_PATH/server-error.log" &
+      STARTED_SERVER_PID=$!
     fi
-    success "Started Velron Server"
+    wait_server_ready
+    success "Velron Server is responding and authentication is ready"
+    info "Management token file (private): $VELRON_HOME_PATH/management-token"
   fi
 fi
 

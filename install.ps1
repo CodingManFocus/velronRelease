@@ -88,7 +88,7 @@ function Read-Confirmation([string]$Label, [bool]$Default = $true) {
 }
 
 function Resolve-AbsolutePath([string]$Value) {
-    $expanded = [Environment]::ExpandEnvironmentVariables($Value)
+    $expanded = [Environment]::ExpandEnvironmentVariables($Value.Trim())
     if ($expanded -eq '~') { $expanded = $HOME }
     if ($expanded.StartsWith('~\') -or $expanded.StartsWith('~/')) {
         $expanded = Join-Path $HOME $expanded.Substring(2)
@@ -108,6 +108,90 @@ function Read-Port([string]$Label, [int]$Default) {
         }
         Write-WarningMessage 'Enter an integer between 1 and 65535.'
     }
+}
+
+function Assert-ServerHost([string]$Value, [switch]$Allowed) {
+    if (-not $Value -or $Value.Length -gt 253) { throw 'Invalid server host.' }
+    $hostValue = $Value
+    if ($hostValue.StartsWith('[') -or $hostValue.EndsWith(']')) {
+        if (-not $Allowed -or $hostValue -notmatch '^\[([^\]]+)\]$') { throw 'Bind IPv6 hosts must not use brackets.' }
+        $hostValue = $Matches[1]
+        $address = $null
+        if (-not [Net.IPAddress]::TryParse($hostValue, [ref]$address) -or $address.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetworkV6) { throw 'Invalid IPv6 allowed host.' }
+        return
+    }
+    if ($hostValue.Contains(':')) {
+        $address = $null
+        if (-not [Net.IPAddress]::TryParse($hostValue, [ref]$address) -or $address.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetworkV6) { throw 'Host must be an IP address or hostname without a port.' }
+        return
+    }
+    foreach ($label in $hostValue.Split('.')) {
+        if ($label.Length -lt 1 -or $label.Length -gt 63 -or $label -notmatch '^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$') { throw 'Invalid DNS hostname.' }
+    }
+}
+
+function Assert-StateHome([string]$StateHome, [string]$CommandDirectory) {
+    $state = [IO.Path]::GetFullPath($StateHome).TrimEnd('\', '/')
+    $profile = [IO.Path]::GetFullPath($HOME).TrimEnd('\', '/')
+    if ($state -notmatch '^[A-Za-z]:\\' -or -not $state.StartsWith("$profile\", [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Velron data must be a dedicated subdirectory of your local Windows user profile, such as %USERPROFILE%\.velron.'
+    }
+    if ($state -ieq ([IO.Path]::GetFullPath($CommandDirectory).TrimEnd('\', '/')) -or $state -ieq ([IO.Path]::GetFullPath((Get-Location).Path).TrimEnd('\', '/'))) {
+        throw 'Velron data cannot be the command directory or the current working directory.'
+    }
+    # A junction could make a lexical profile descendant resolve outside that profile.
+    $ancestor = $state
+    while ($ancestor -and $ancestor -ine $profile) {
+        if ((Test-Path -LiteralPath $ancestor) -and ((Get-Item -LiteralPath $ancestor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'Choose a Velron data path without symlinks or junctions below the user profile.'
+        }
+        $ancestor = Split-Path -Parent $ancestor
+    }
+}
+
+function Wait-ServerReady([Diagnostics.Process]$Process, [string]$StateHome) {
+    $settings = Get-Content -Raw -LiteralPath (Join-Path $StateHome 'config.json') | ConvertFrom-Json
+    Assert-ServerHost $settings.host
+    $bindHost = $settings.host
+    if ($bindHost -eq '0.0.0.0') { $bindHost = '127.0.0.1' }
+    elseif ($bindHost -eq '::') { $bindHost = '::1' }
+    if ($bindHost.Contains(':')) { $bindHost = "[$bindHost]" }
+    $uri = "http://${bindHost}:$($settings.port)/api/health"
+    for ($attempt = 0; $attempt -lt 30; $attempt++) {
+        $Process.Refresh()
+        if ($Process.HasExited) { throw "Velron Server exited before becoming ready. Check $StateHome\server-error.log and server.log." }
+        $response = $null; $reader = $null; $ready = $false
+        try {
+            $request = [Net.HttpWebRequest]::Create($uri)
+            $request.Proxy = $null
+            $request.AllowAutoRedirect = $false
+            $request.Timeout = 2000
+            $request.ReadWriteTimeout = 2000
+            try { $response = $request.GetResponse() }
+            catch [Net.WebException] { $response = $_.Exception.Response }
+            if ($response -and [int]$response.StatusCode -eq 401) {
+                $reader = [IO.StreamReader]::new($response.GetResponseStream())
+                $buffer = New-Object char[] 8192
+                $count = $reader.ReadBlock($buffer, 0, $buffer.Length)
+                if ($count -lt $buffer.Length) {
+                    $body = (-join $buffer[0..($count - 1)]) | ConvertFrom-Json
+                    $ready = $body.error.code -eq 'management_authentication_required'
+                }
+            }
+        } catch { $ready = $false }
+        finally {
+            if ($reader) { $reader.Dispose() }
+            if ($response) { $response.Close() }
+        }
+        if ($ready) {
+            Start-Sleep -Seconds 1
+            $Process.Refresh()
+            if ($Process.HasExited) { throw "Velron Server exited. Check $StateHome\server-error.log." }
+            return
+        }
+        Start-Sleep -Seconds 1
+    }
+    throw "Velron Server did not become ready. Check $StateHome\server-error.log and server.log; confirm the configured ports are available."
 }
 
 function Assert-VcpUrl([string]$Value) {
@@ -130,7 +214,7 @@ function Write-PrivateUtf8File([string]$Path, [string]$Content) {
     Move-Item -LiteralPath $temporary -Destination $Path -Force
 }
 
-function Install-VerifiedAsset([string]$AssetName, [string]$Destination, [string]$ChecksumsPath, [string]$TemporaryDirectory) {
+function Get-VerifiedAsset([string]$AssetName, [string]$ChecksumsPath, [string]$TemporaryDirectory) {
     $downloadPath = Join-Path $TemporaryDirectory $AssetName
     Write-Info "Downloading $AssetName..."
     Invoke-WebRequest -UseBasicParsing -Uri "$script:latestBaseUrl/$AssetName" -OutFile $downloadPath
@@ -142,11 +226,49 @@ function Install-VerifiedAsset([string]$AssetName, [string]$Destination, [string
     $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $downloadPath).Hash.ToLowerInvariant()
     if ($actual -ne $expected) { throw "SHA-256 verification failed for $AssetName." }
     Write-Success "Verified $AssetName"
-    $destinationDirectory = Split-Path -Parent $Destination
-    [IO.Directory]::CreateDirectory($destinationDirectory) | Out-Null
-    $staged = "$Destination.new.$PID"
-    Copy-Item -LiteralPath $downloadPath -Destination $staged -Force
-    Move-Item -LiteralPath $staged -Destination $Destination -Force
+    return $downloadPath
+}
+
+function Install-StagedAssets([object[]]$Assets) {
+    $changed = [Collections.Generic.List[object]]::new()
+    try {
+        # Verify all downloads before calling this function; stage all replacements next.
+        foreach ($asset in $Assets) {
+            [IO.Directory]::CreateDirectory((Split-Path -Parent $asset.Destination)) | Out-Null
+            if (Test-Path -LiteralPath $asset.Destination -PathType Container) { throw "Runtime destination is a directory: $($asset.Destination)" }
+            $asset.Staged = "$($asset.Destination).new.$PID"
+            $asset.Backup = "$($asset.Destination).previous.$PID"
+            Copy-Item -LiteralPath $asset.Source -Destination $asset.Staged -Force
+            if (Test-Path -LiteralPath $asset.Destination -PathType Leaf) {
+                Copy-Item -LiteralPath $asset.Destination -Destination $asset.Backup -Force
+            }
+        }
+        foreach ($asset in $Assets) {
+            Move-Item -LiteralPath $asset.Staged -Destination $asset.Destination -Force
+            $changed.Add($asset)
+        }
+    } catch {
+        $installError = $_
+        for ($index = $changed.Count - 1; $index -ge 0; $index--) {
+            $asset = $changed[$index]
+            try {
+                if (Test-Path -LiteralPath $asset.Backup -PathType Leaf) {
+                    Move-Item -LiteralPath $asset.Backup -Destination $asset.Destination -Force
+                } else { Remove-Item -LiteralPath $asset.Destination -Force }
+            } catch {
+                $asset.RetainBackup = $true
+                Write-WarningMessage "Could not restore $($asset.Destination). Recover it from $($asset.Backup)."
+            }
+        }
+        throw "Could not replace the selected runtimes. Close Velron Server and MCP Client processes, then retry. $($installError.Exception.Message)"
+    } finally {
+        foreach ($asset in $Assets) {
+            if ($asset.Staged -and (Test-Path -LiteralPath $asset.Staged)) { Remove-Item -LiteralPath $asset.Staged -Force -ErrorAction SilentlyContinue }
+            if ($asset.Backup -and -not $asset.RetainBackup -and (Test-Path -LiteralPath $asset.Backup)) {
+                Remove-Item -LiteralPath $asset.Backup -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
 }
 
 function Add-UserPath([string]$Directory) {
@@ -283,10 +405,10 @@ if ($NonInteractive) {
     if ($serverHttpPort -lt 1 -or $serverHttpPort -gt 65535 -or $serverVcpPort -lt 1 -or $serverVcpPort -gt 65535 -or $serverHttpPort -eq $serverVcpPort) {
         throw 'HTTP and VCP ports must be distinct integers from 1 to 65535.'
     }
-    if ($serverHost -notmatch '^[A-Za-z0-9.:\[\]_-]+$') { throw 'Invalid server bind host.' }
+    Assert-ServerHost $serverHost
     $serverAllowedHosts = @($env:VELRON_INSTALL_ALLOWED_HOSTS -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
     foreach ($allowedHost in $serverAllowedHosts) {
-        if ($allowedHost -notmatch '^[A-Za-z0-9.:\[\]_-]+$') { throw 'Invalid allowed host.' }
+        Assert-ServerHost $allowedHost -Allowed
     }
     $keepConfig = Read-GuiBoolean 'KEEP_CONFIG'
     $writeServerConfig = -not ($keepConfig -and (Test-Path -LiteralPath (Join-Path $velronHome 'config.json') -PathType Leaf))
@@ -386,6 +508,13 @@ if (-not (Read-Confirmation 'Continue?' $true)) {
 }
 }
 
+Assert-StateHome $velronHome $installDirectory
+if ($installServer -and $writeServerConfig) {
+    Assert-ServerHost $serverHost
+    if ($serverAllowedHosts.Count -gt 256) { throw 'At most 256 allowed hosts are supported.' }
+    foreach ($allowedHost in $serverAllowedHosts) { Assert-ServerHost $allowedHost -Allowed }
+}
+
 $temporaryDirectory = Join-Path ([IO.Path]::GetTempPath()) "velron-installer-$([guid]::NewGuid().ToString('N'))"
 [IO.Directory]::CreateDirectory($temporaryDirectory) | Out-Null
 try {
@@ -393,19 +522,22 @@ try {
     Write-Stage 'download'
     Write-Info 'Downloading release checksums...'
     Invoke-WebRequest -UseBasicParsing -Uri "$latestBaseUrl/SHA256SUMS.txt" -OutFile $checksumsPath
-    [IO.Directory]::CreateDirectory($installDirectory) | Out-Null
-    [IO.Directory]::CreateDirectory($velronHome) | Out-Null
-
     $serverPath = Join-Path $installDirectory 'velron.exe'
     $clientPath = Join-Path $installDirectory 'velron-client.exe'
+    $assets = @()
     if ($installServer) {
         Write-Stage 'server'
-        Install-VerifiedAsset "velron-windows-$architectureName.exe" $serverPath $checksumsPath $temporaryDirectory
+        $source = Get-VerifiedAsset "velron-windows-$architectureName.exe" $checksumsPath $temporaryDirectory
+        $assets += @{ Source = $source; Destination = $serverPath; Staged = $null; Backup = $null; RetainBackup = $false }
     }
     if ($installClient) {
         Write-Stage 'client'
-        Install-VerifiedAsset "velron-client-windows-$architectureName.exe" $clientPath $checksumsPath $temporaryDirectory
+        $source = Get-VerifiedAsset "velron-client-windows-$architectureName.exe" $checksumsPath $temporaryDirectory
+        $assets += @{ Source = $source; Destination = $clientPath; Staged = $null; Backup = $null; RetainBackup = $false }
     }
+
+    Install-StagedAssets $assets
+    [IO.Directory]::CreateDirectory($velronHome) | Out-Null
 
     Write-Stage 'configure'
     [Environment]::SetEnvironmentVariable('VELRON_HOME', $velronHome, 'User')
@@ -417,6 +549,7 @@ try {
         } else {
             Set-OptionalUserEnvironment 'VELRON_VCP_URL' ''
             Set-OptionalUserEnvironment 'VELRON_VCP_TOKEN' ''
+            Set-OptionalUserEnvironment 'VELRON_LOCAL_VCP_PORT' ''
         }
     }
 
@@ -440,6 +573,11 @@ try {
 
     if ($installClient) {
         $clientEnvironment = [ordered]@{ VELRON_HOME = $velronHome }
+        if ($vcpMode -eq 'local') {
+            $clientEnvironment['VELRON_VCP_URL'] = ''
+            $clientEnvironment['VELRON_VCP_TOKEN'] = ''
+            $clientEnvironment['VELRON_LOCAL_VCP_PORT'] = ''
+        }
         Write-Stage 'integrate'
         if ($vcpMode -eq 'remote') {
             $clientEnvironment['VELRON_VCP_URL'] = $vcpUrl
@@ -482,12 +620,16 @@ try {
             Write-Info 'Velron Server autostart is disabled'
         }
         if ($startServerNow) {
-            if ($NonInteractive) {
-                Start-Process -FilePath $serverPath -WorkingDirectory $installDirectory -WindowStyle Hidden
-            } else {
-                Start-Process -FilePath $serverPath -WorkingDirectory $installDirectory
+            $startArguments = @{
+                FilePath = $serverPath; WorkingDirectory = $installDirectory; PassThru = $true
+                RedirectStandardOutput = (Join-Path $velronHome 'server.log')
+                RedirectStandardError = (Join-Path $velronHome 'server-error.log')
             }
-            Write-Success 'Started Velron Server'
+            if ($NonInteractive) { $startArguments.WindowStyle = 'Hidden' }
+            $serverProcess = Start-Process @startArguments
+            Wait-ServerReady $serverProcess $velronHome
+            Write-Success 'Velron Server is responding and authentication is ready'
+            Write-Info "Management token file (private): $(Join-Path $velronHome 'management-token')"
         }
     }
 } finally {

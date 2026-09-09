@@ -48,6 +48,51 @@ try {
     $rejected = $false
     try { Invoke-Expression $adapter.Extent.Text } catch { $rejected = $true }
     if (-not $rejected) { throw 'Invalid component input was accepted.' }
+    foreach ($hostValue in @('[::1]', 'localhost:4141', 'invalid_host', '2001:::1')) {
+        $rejected = $false
+        try { Assert-ServerHost $hostValue } catch { $rejected = $true }
+        if (-not $rejected) { throw "Invalid bind host accepted: $hostValue" }
+    }
+    foreach ($hostValue in @('127.0.0.1', 'example.test', '::1', '2001:db8::1')) { Assert-ServerHost $hostValue }
+    Assert-ServerHost '[::1]' -Allowed
+    if ($env:OS -eq 'Windows_NT') {
+        foreach ($statePath in @($HOME, 'D:\Velron', '\\server\share\Velron')) {
+            $rejected = $false
+            try { Assert-StateHome $statePath (Join-Path $HOME 'commands') } catch { $rejected = $true }
+            if (-not $rejected) { throw "Invalid Windows state directory accepted: $statePath" }
+        }
+        Assert-StateHome (Join-Path $HOME '.velron-test-dedicated') (Join-Path $HOME 'commands')
+    }
+
+    # Use the actual transaction helper with a synthetic second-swap failure.
+    $stageFixture = Join-Path $fixture 'transaction'
+    [IO.Directory]::CreateDirectory($stageFixture) | Out-Null
+    $assets = @()
+    foreach ($component in @('server', 'client')) {
+        $source = Join-Path $stageFixture "$component.download"
+        $destination = Join-Path $stageFixture "$component.exe"
+        [IO.File]::WriteAllText($source, "new-$component")
+        [IO.File]::WriteAllText($destination, "old-$component")
+        $assets += @{ Source = $source; Destination = $destination; Staged = $null; Backup = $null; RetainBackup = $false }
+    }
+    function Move-Item {
+        param([string]$LiteralPath, [string]$Destination, [switch]$Force)
+        if ((Split-Path -Leaf $LiteralPath) -like 'client.exe.new.*') { throw 'Synthetic second swap failure' }
+        Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination -Force:$Force
+    }
+    try {
+        $rejected = $false
+        try { Install-StagedAssets $assets } catch { $rejected = $true }
+        if (-not $rejected) { throw 'Synthetic swap failure was not surfaced.' }
+        foreach ($component in @('server', 'client')) {
+            if ([IO.File]::ReadAllText((Join-Path $stageFixture "$component.exe")) -ne "old-$component") {
+                throw "Transaction failed to restore $component."
+            }
+        }
+        if (@(Get-ChildItem -LiteralPath $stageFixture | Where-Object { $_.Name -match '\.(new|previous)\.' }).Count -ne 0) {
+            throw 'Transaction left staging or backup files after successful rollback.'
+        }
+    } finally { Remove-Item Function:\Move-Item }
     Write-Output 'PowerShell syntax, GUI settings, local mode, config preservation, and invalid input checks passed.'
 } finally {
     foreach ($name in $originalEnvironment.Keys) {

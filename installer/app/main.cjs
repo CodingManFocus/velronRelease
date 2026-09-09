@@ -4,6 +4,9 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { getDefaults, validateOptions } = require('./installOptions.cjs');
 const { createInstallRunner } = require('./installRunner.cjs');
+const { validateFilesystemOptions } = require('./installPaths.cjs');
+const { isServerSettings } = require('./serverSettings.cjs');
+const { openInstalledServer } = require('./managementBootstrap.cjs');
 
 let window;
 let runner;
@@ -22,12 +25,11 @@ async function inspectConfig(directory) {
     const stat = await fs.stat(configPath);
     if (!stat.isFile() || stat.size > 1024 * 1024) return { exists: true, valid: false };
     const config = JSON.parse(await fs.readFile(configPath, 'utf8'));
-    const validPort = port => Number.isInteger(port) && port > 0 && port < 65536;
-    if (!config || !validPort(config.port) || !validPort(config.localVcpPort) || config.port === config.localVcpPort || typeof config.host !== 'string' || !/^[A-Za-z0-9.:[\]_-]+$/.test(config.host)) {
+    if (!isServerSettings(config)) {
       return { exists: true, valid: false };
     }
     // Return only the network settings needed by the wizard; no tokens or private state.
-    return { exists: true, valid: true, httpPort: config.port, vcpPort: config.localVcpPort, serverHost: config.host };
+    return { exists: true, valid: true, httpPort: config.port, vcpPort: config.localVcpPort, serverHost: config.host.trim() };
   } catch (error) {
     if (error.code === 'ENOENT') return { exists: false, valid: true };
     return { exists: true, valid: false };
@@ -104,7 +106,8 @@ if (!app.requestSingleInstanceLock()) {
     handle('installer:install', async input => {
       if (runner.running) throw new Error('An installation is already running.');
       installedOptions = null;
-      const options = validateOptions(input);
+      const options = validateOptions(input, process.platform, { cwd: engineDir });
+      await validateFilesystemOptions(options, { cwd: engineDir });
       if (options.components !== 'client' && options.keepConfig) {
         const config = await inspectConfig(options.velronHome);
         if (config.exists && !config.valid) throw new Error('The existing Server configuration cannot be read. Choose new Server settings or repair config.json.');
@@ -126,10 +129,8 @@ if (!app.requestSingleInstanceLock()) {
     });
     handle('installer:open-server', async () => {
       if (!installedOptions || installedOptions.components === 'client' || !installedOptions.startNow) return;
-      const host = installedOptions.serverHost;
-      const browserHost = ['0.0.0.0', '127.0.0.1', 'localhost'].includes(host) ? '127.0.0.1'
-        : ['::', '::1', '[::]', '[::1]'].includes(host) ? '[::1]' : host.includes(':') ? `[${host.replace(/^\[|\]$/g, '')}]` : host;
-      await shell.openExternal(`http://${browserHost}:${installedOptions.httpPort}`);
+      await openInstalledServer(installedOptions, { openExternal: url => shell.openExternal(url),
+        tokenOptions: { cwd: engineDir } });
     });
     handle('installer:close', () => { if (!runner.running) window.close(); });
     createWindow();

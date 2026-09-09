@@ -78,3 +78,114 @@ test('checksum failures and invalid selections fail before installing unverified
   await assert.rejects(fs.stat(path.join(f.options.commandDir, 'velron')));
   await assert.rejects(f.run({ components: 'typo' }), error => error.code !== 0);
 });
+
+async function rewriteAssets(f, version, corruptClient = false) {
+  const sums = [];
+  for (const name of await fs.readdir(f.downloads)) {
+    if (name === 'SHA256SUMS.txt') continue;
+    const content = `#!/bin/sh\nprintf '${version} %s %s %s\\n' "\${VELRON_VCP_URL-unset}" "\${VELRON_VCP_TOKEN-unset}" "\${VELRON_LOCAL_VCP_PORT-unset}"\n`;
+    await fs.writeFile(path.join(f.downloads, name), content);
+    sums.push((corruptClient && name.startsWith('velron-client-') ? '0'.repeat(64) : crypto.createHash('sha256').update(content).digest('hex')) + '  ' + name);
+  }
+  await fs.writeFile(path.join(f.downloads, 'SHA256SUMS.txt'), sums.join('\n') + '\n');
+}
+
+test('a later Client checksum failure leaves both existing runtimes and configuration intact', { skip: process.platform === 'win32' }, async t => {
+  const f = await fixture(t);
+  await rewriteAssets(f, 'old'); await f.run();
+  const paths = ['velron-runtime', 'velron-client-runtime'].map(name => path.join(f.env.XDG_DATA_HOME, 'velron/bin', name));
+  paths.push(path.join(f.options.velronHome, 'config.json'));
+  const before = await Promise.all(paths.map(file => fs.readFile(file, 'utf8')));
+  await rewriteAssets(f, 'new', true);
+  await assert.rejects(f.run(), error => /SHA-256 verification failed for velron-client/.test(error.stderr));
+  assert.deepEqual(await Promise.all(paths.map(file => fs.readFile(file, 'utf8'))), before);
+});
+
+test('a second binary swap failure restores the first runtime and removes staging files', { skip: process.platform === 'win32' }, async t => {
+  const f = await fixture(t);
+  await rewriteAssets(f, 'old'); await f.run();
+  const runtimeDir = path.join(f.env.XDG_DATA_HOME, 'velron/bin');
+  const oldPair = await Promise.all(['velron-runtime', 'velron-client-runtime'].map(name => fs.readFile(path.join(runtimeDir, name), 'utf8')));
+  await rewriteAssets(f, 'new');
+  await fs.writeFile(path.join(f.bin, 'mv'), '#!/bin/sh\nfor arg in "$@"; do\n case "$arg" in */velron-client-runtime.new.*) exit 73;; esac\ndone\nexec /bin/mv "$@"\n', { mode: 0o755 });
+  await assert.rejects(f.run(), error => error.code === 73);
+  assert.deepEqual(await Promise.all(['velron-runtime', 'velron-client-runtime'].map(name => fs.readFile(path.join(runtimeDir, name), 'utf8'))), oldPair);
+  assert.deepEqual((await fs.readdir(runtimeDir)).sort(), ['velron-client-runtime', 'velron-runtime']);
+});
+
+test('changing command directory updates the managed PATH block and preserves user profile content', { skip: process.platform === 'win32' }, async t => {
+  const f = await fixture(t);
+  const profile = path.join(f.home, '.profile');
+  await fs.writeFile(profile, '# User profile\nexport USER_CHOICE=kept\n');
+  await f.run();
+  const commandDir = path.join(f.home, 'replacement-bin'); await f.run({ commandDir });
+  const body = await fs.readFile(profile, 'utf8');
+  assert.match(body, /export USER_CHOICE=kept/);
+  assert.equal((body.match(/# >>> velron >>>/g) || []).length, 1);
+  const { stdout } = await exec('/bin/sh', ['-c', '. "$1"; command -v velron', 'test', profile], { env: { ...f.env, PATH: '/usr/bin:/bin' } });
+  assert.equal(stdout.trim(), path.join(commandDir, 'velron'));
+});
+
+test('local Client selection clears stale inherited remote credentials and discovery override', { skip: process.platform === 'win32' }, async t => {
+  const f = await fixture(t); await rewriteAssets(f, 'local');
+  await f.run({ components: 'client', connection: 'local' });
+  const { stdout } = await exec(path.join(f.options.commandDir, 'velron-client'), [], {
+    env: { ...f.env, VELRON_VCP_URL: 'wss://stale.example/vcp/v1', VELRON_VCP_TOKEN: 'synthetic-secret', VELRON_LOCAL_VCP_PORT: '9999' },
+  });
+  assert.equal(stdout.trim(), 'local unset unset unset');
+});
+
+test('an immediately exiting Server never reports startup or installation success', { skip: process.platform === 'win32' }, async t => {
+  const f = await fixture(t);
+  await assert.rejects(f.run({ components: 'server', startNow: true }), error => {
+    assert.match(error.stderr, /Server exited before becoming ready/);
+    assert.doesNotMatch(error.stdout, /VELRON_INSTALL_STAGE:complete|authentication is ready/);
+    return true;
+  });
+});
+
+test('startup waits for a live authentication endpoint using the preserved management port', { skip: process.platform === 'win32' }, async t => {
+  const f = await fixture(t);
+  const listener = require('node:net').createServer();
+  await new Promise(resolve => listener.listen(0, '127.0.0.1', resolve));
+  const port = listener.address().port;
+  await new Promise(resolve => listener.close(resolve));
+  await f.run({ components: 'server', keepConfig: false, httpPort: port });
+  // Exercise compact JSON as well as the normal multiline config emitted by the engine.
+  const configFile = path.join(f.options.velronHome, 'config.json');
+  await fs.writeFile(configFile, JSON.stringify(JSON.parse(await fs.readFile(configFile, 'utf8'))));
+  const pidFile = path.join(f.dir, 'server.pid');
+  const program = `#!${process.execPath}\nconst fs=require('node:fs');const config=JSON.parse(fs.readFileSync(process.env.VELRON_HOME+'/config.json'));fs.writeFileSync(process.env.FAKE_SERVER_PID,String(process.pid));require('node:http').createServer((request,response)=>{response.writeHead(401,{'Content-Type':'application/json'});response.end(JSON.stringify({error:{code:'management_authentication_required'}}));}).listen(config.port,config.host);\n`;
+  const sums = [];
+  for (const name of await fs.readdir(f.downloads)) {
+    if (name === 'SHA256SUMS.txt') continue;
+    await fs.writeFile(path.join(f.downloads, name), program);
+    sums.push(crypto.createHash('sha256').update(program).digest('hex') + '  ' + name);
+  }
+  await fs.writeFile(path.join(f.downloads, 'SHA256SUMS.txt'), sums.join('\n') + '\n');
+  const realCurl = (await exec('/bin/sh', ['-c', 'command -v curl'])).stdout.trim();
+  const fakeCurl = path.join(f.bin, 'curl');
+  const downloadAdapter = await fs.readFile(fakeCurl, 'utf8');
+  await fs.writeFile(fakeCurl, downloadAdapter.replace('#!/bin/sh\n', '#!/bin/sh\nfor arg in "$@"; do\n case "$arg" in http://*) exec "$FAKE_REAL_CURL" "$@";; esac\ndone\n'));
+  try {
+    const { stdout } = await f.run({ components: 'server', startNow: true }, { FAKE_SERVER_PID: pidFile, FAKE_REAL_CURL: realCurl });
+    assert.match(stdout, /authentication is ready/);
+    assert.match(stdout, /VELRON_INSTALL_STAGE:complete/);
+  } finally {
+    const pid = Number(await fs.readFile(pidFile, 'utf8').catch(() => '0'));
+    if (pid > 0) { try { process.kill(pid, 'SIGTERM'); } catch {} }
+  }
+});
+
+test('unsafe state locations and malformed hosts fail before creating installed files', { skip: process.platform === 'win32' }, async t => {
+  const f = await fixture(t);
+  for (const velronHome of [f.home, '/', path.join(f.home, '..', path.basename(f.home))]) {
+    await assert.rejects(f.run({ velronHome }), error => /dedicated directory/.test(error.stderr));
+  }
+  for (const serverHost of ['[::1]', 'localhost:4141', 'invalid_host', '2001:::1']) {
+    await assert.rejects(f.run({ serverHost }), error => /Invalid server bind host/.test(error.stderr));
+  }
+  for (const serverHost of ['::1', '2001:db8::1', '::ffff:192.168.1.1', 'example.test']) {
+    await f.run({ components: 'server', serverHost, keepConfig: false });
+  }
+});

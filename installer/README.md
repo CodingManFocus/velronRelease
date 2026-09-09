@@ -26,9 +26,34 @@ Both UI modes share checksum verification, download, configuration, PATH, MCP, a
 The normal One-line install remains interactive. Server/Client binaries are downloaded from the
 latest application release, so an internet connection is required.
 
+All selected runtime downloads are verified before any installed runtime is replaced. The engines
+stage both replacements and retain previous binaries while swapping; an ordinary swap failure
+restores the previous selected set. This transaction covers binary replacement, not later PATH,
+MCP, configuration, or startup changes. A power loss or forced process-tree termination can still
+interrupt a swap; keep a backup before upgrading an important installation. On Windows, close
+Server and Client processes before upgrading. The Installer reports a locked executable and
+preserves/restores the previous binaries where the OS permits; it does not forcibly terminate
+running applications to replace them.
+
+When immediate startup is selected, success requires a live Server process/service and the expected
+unauthenticated management response. This checks management listener readiness; it does not test
+configured model providers. Startup failures point to `server-error.log`, `server.log`, or the user
+service journal. The GUI's **Open Velron** checks a numeric loopback endpoint, reads the private
+`management-token` file, and hands it to the browser in a URL fragment. The token is never returned
+to the renderer or included in Installer logs. Automatic sign-in requires a loopback/wildcard bind;
+custom network binds receive instructions to enable local access. The runtime writes the token file
+when it starts, so installations that defer startup must start Server before signing in.
+
+The data directory must be separate from root, user home, working directory, and command directory.
+On Windows it must be a dedicated local subdirectory of the user's profile; the PowerShell engine
+rejects junctions and symlinks below that profile. Existing GUI Server settings are validated against
+the full runtime settings schema. POSIX reinstalls replace the Installer-owned PATH block with the
+new command directory. Installed local Client launchers clear inherited remote URL/token and port
+overrides so that automatic local discovery takes effect.
+
 ## Downloads and compatibility
 
-The `Installer release` workflow publishes the existing stable filenames under `installer-latest`:
+The `Installer release` workflow publishes these filenames under an immutable `installer-<commit SHA>` tag. It uploads and verifies all assets in a draft before publishing; only then does the `installer-latest` release page switch its download links. Failed uploads leave the previous download page intact:
 
 | File | Platform |
 | --- | --- |

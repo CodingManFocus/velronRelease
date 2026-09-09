@@ -1,5 +1,7 @@
 const os = require('node:os');
 const path = require('node:path');
+const { isBindHost, isAllowedHost } = require('./serverSettings.cjs');
+const { assertDedicatedStatePath } = require('./installPaths.cjs');
 
 const fields = ['components', 'velronHome', 'commandDir', 'keepConfig', 'serverHost', 'httpPort',
   'vcpPort', 'allowedHosts', 'autostart', 'startNow', 'connection', 'vcpUrl', 'vcpToken', 'integration'];
@@ -16,7 +18,7 @@ function getDefaults(platform = process.platform, home = os.homedir(), env = pro
   };
 }
 
-function validateOptions(input, platform = process.platform) {
+function validateOptions(input, platform = process.platform, { home = os.homedir(), cwd = process.cwd() } = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid installation settings.');
   if (Object.keys(input).some(key => !fields.includes(key))) throw new Error('Unknown installation setting.');
   if (input.components === 'client') input = { ...input, serverHost: '127.0.0.1', httpPort: 4141,
@@ -39,18 +41,23 @@ function validateOptions(input, platform = process.platform) {
   }
   const paths = platform === 'win32' ? path.win32 : path.posix;
   for (const key of ['velronHome', 'commandDir']) {
+    options[key] = options[key].trim();
     if (!paths.isAbsolute(options[key]) || (platform === 'win32' && !/^(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+)/.test(options[key]))) {
       throw new Error('Choose an absolute installation path.');
     }
     options[key] = paths.normalize(options[key]);
     if (platform === 'win32' && /[%"<>|?*]/.test(options[key])) throw new Error('This Windows path contains unsupported characters.');
   }
+  assertDedicatedStatePath(options.velronHome, { platform, home, cwd, commandDir: options.commandDir });
   if (options.components !== 'client') {
-    if (!options.serverHost || !/^[A-Za-z0-9.:[\]_-]+$/.test(options.serverHost)) throw new Error('Enter a valid server bind host.');
+    if (!isBindHost(options.serverHost)) throw new Error('Enter an IP address or DNS hostname without a scheme, path, port or IPv6 brackets.');
+    options.serverHost = options.serverHost.trim();
     if (options.httpPort === options.vcpPort) throw new Error('HTTP and VCP ports must differ.');
-    if (options.allowedHosts.split(',').some(host => host.trim() && !/^[A-Za-z0-9.:[\]_-]+$/.test(host.trim()))) {
+    const allowedHosts = options.allowedHosts.split(',').map(host => host.trim()).filter(Boolean);
+    if (allowedHosts.length > 256 || allowedHosts.some(host => !isAllowedHost(host))) {
       throw new Error('Enter allowed hostnames separated by commas.');
     }
+    options.allowedHosts = [...new Set(allowedHosts.map(host => host.toLowerCase()))].join(',');
   }
   if (options.components !== 'server' && options.connection === 'remote') {
     let url;

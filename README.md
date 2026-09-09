@@ -42,10 +42,10 @@ An internet connection is required.
 
 | Platform | Installer |
 | --- | --- |
-| Windows (Intel / AMD) | [Velron-Installer-windows-x64.exe](https://github.com/CodingManFocus/velronRelease/releases/download/installer-latest/Velron-Installer-windows-x64.exe) |
-| Windows (ARM) | [Velron-Installer-windows-arm64.exe](https://github.com/CodingManFocus/velronRelease/releases/download/installer-latest/Velron-Installer-windows-arm64.exe) |
-| macOS (Apple Silicon / Intel) | [Velron-Installer-macos-universal.zip](https://github.com/CodingManFocus/velronRelease/releases/download/installer-latest/Velron-Installer-macos-universal.zip) |
-| Linux | [Velron-Installer-linux.tar.gz](https://github.com/CodingManFocus/velronRelease/releases/download/installer-latest/Velron-Installer-linux.tar.gz) |
+| Windows (Intel / AMD) | [Velron-Installer-windows-x64.exe](https://github.com/CodingManFocus/velronRelease/releases/tag/installer-latest) |
+| Windows (ARM) | [Velron-Installer-windows-arm64.exe](https://github.com/CodingManFocus/velronRelease/releases/tag/installer-latest) |
+| macOS (Apple Silicon / Intel) | [Velron-Installer-macos-universal.zip](https://github.com/CodingManFocus/velronRelease/releases/tag/installer-latest) |
+| Linux | [Velron-Installer-linux.tar.gz](https://github.com/CodingManFocus/velronRelease/releases/tag/installer-latest) |
 
 On Windows, open the `.exe`. On macOS, extract the ZIP and open `Velron Installer.app`.
 On Linux, extract the archive and open `Velron-Installer.desktop` (allow launching if your desktop
@@ -55,7 +55,7 @@ inside the window. The GUI does not require an interactive terminal.
 
 The Windows and macOS launchers do not yet have a trusted publisher signature; your OS may ask for
 approval before opening them. [Installer details and source](installer/README.md) and
-[SHA-256 checksums](https://github.com/CodingManFocus/velronRelease/releases/download/installer-latest/SHA256SUMS-installers.txt)
+[SHA-256 checksums](https://github.com/CodingManFocus/velronRelease/releases/tag/installer-latest)
 are available separately.
 
 ## Default locations
@@ -110,7 +110,8 @@ Host configuration details: [Codex MCP](https://developers.openai.com/codex/mcp)
 Application releases contain Server and Client builds for Windows, macOS, and Linux on x64 and
 arm64, plus `SHA256SUMS.txt`. Downloads are available from the
 [latest release](https://github.com/CodingManFocus/velronRelease/releases/latest).
-GUI Installers are published under their own `installer-latest` tag and do not replace the
+GUI Installers are published under immutable `installer-<commit SHA>` tags.
+The `installer-latest` release page links to a complete verified version and do not replace the
 latest Server and Client release.
 
 Use is subject to the terms in [LICENSE](LICENSE).
