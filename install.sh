@@ -263,8 +263,9 @@ canonical_path() (
 validate_state_home() {
   state_path=$(canonical_path "$1") || die "Cannot resolve the Velron data directory."
   state_user_home=$(canonical_path "$HOME") || die "Cannot resolve the user home directory."
-  [ "$state_path" != / ] && [ "$state_path" != "$state_user_home" ] && [ "$state_path" != "$(pwd -P)" ] ||
+  if [ "$state_path" = / ] || [ "$state_path" = "$state_user_home" ] || [ "$state_path" = "$(pwd -P)" ]; then
     die "Velron data must use a dedicated directory, not the filesystem root, user home, or working directory."
+  fi
 }
 
 wait_server_ready() {
