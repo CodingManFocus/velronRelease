@@ -53,7 +53,9 @@ overrides so that automatic local discovery takes effect.
 
 ## Downloads and compatibility
 
-The `Installer release` workflow publishes these filenames under an immutable `installer-<commit SHA>` tag. It uploads and verifies all assets in a draft before publishing; only then does the `installer-latest` release page switch its download links. Failed uploads leave the previous download page intact:
+The `Installer builds` workflow builds and checks these files, then provides them together as the
+`installer-release-files` Actions artifact. It does not create, edit, upload to, or delete GitHub
+Releases. Only the repository owner manually uploads and publishes releases:
 
 | File | Platform |
 | --- | --- |
@@ -95,9 +97,51 @@ sandboxed bridge and input validation without starting an installation.
 Build on the corresponding OS with `npm run build:windows`, `npm run build:macos`, or
 `npm run build:linux`. CI packages both Linux architectures into the shared archive, builds a
 universal macOS application, checks native source and packaged windows, and captures screenshots.
-Pull requests build downloadable workflow artifacts without updating public releases. A merge
-to `main` publishes after all three OS jobs pass. Every installer release write keeps
-`make_latest: "false"`, preserving the application's `/releases/latest` download URLs.
+Pull requests, pushes to `main`, and manual workflow runs only produce downloadable Actions
+artifacts. On `main`, after all three OS jobs pass, a packaging job checks that all four installer files
+are non-empty regular files and streams their SHA-256 hashes into `SHA256SUMS-installers.txt`.
+The local-only helper can also be run from the repository root:
+
+```sh
+node installer/scripts/prepareReleaseFiles.cjs dist
+```
+
+The helper reads and writes local files; it has no network access code, GitHub API client,
+child-process invocation, or token handling.
+
+## Manual release publication
+
+1. Open a successful **Installer builds** run for the intended `velronRelease` commit. Record
+   its full 40-character commit SHA and download the **installer-release-files** artifact.
+   Extract it; do not upload the enclosing Actions artifact ZIP as an installer.
+2. Create a draft release in `CodingManFocus/velronRelease` with tag
+   `installer-<full source SHA>`, targeting that exact commit. Upload all four platform files
+   and `SHA256SUMS-installers.txt` from the same run, preserving the filenames in the table.
+3. Verify that all five uploads have completed, that their sizes match the downloaded files,
+   and that the four installer files match the SHA-256 entries. Include `Source: <full source SHA>`
+   in the release description. Publish the complete version **without selecting it as Latest**.
+   The application's Server/Client release must remain `/releases/latest`.
+4. Only after that version is public and its files are downloadable, edit the existing
+   `installer-latest` release description to link to the new version. Replace every `SOURCE_SHA`
+   below with the same full commit SHA. Keep the exact `installer-release` marker: the website's
+   release validator uses it to locate the versioned installer files.
+
+```markdown
+- [Windows x64](https://github.com/CodingManFocus/velronRelease/releases/download/installer-SOURCE_SHA/Velron-Installer-windows-x64.exe)
+- [Windows ARM64](https://github.com/CodingManFocus/velronRelease/releases/download/installer-SOURCE_SHA/Velron-Installer-windows-arm64.exe)
+- [macOS](https://github.com/CodingManFocus/velronRelease/releases/download/installer-SOURCE_SHA/Velron-Installer-macos-universal.zip)
+- [Linux](https://github.com/CodingManFocus/velronRelease/releases/download/installer-SOURCE_SHA/Velron-Installer-linux.tar.gz)
+- [SHA-256 checksums](https://github.com/CodingManFocus/velronRelease/releases/download/installer-SOURCE_SHA/SHA256SUMS-installers.txt)
+
+Source: SOURCE_SHA
+<!-- installer-release: installer-SOURCE_SHA -->
+```
+
+Keep `installer-latest` **unselected as Latest** as well. Its description is the stable download
+page, not the application's latest-release pointer. Preserve previously published version assets
+and any older assets attached to `installer-latest`, so existing links keep working. Do not
+replace files in an already published version; publish a new version for a new build. If an upload
+or verification fails, leave the new version as a draft and keep the stable page unchanged.
 
 ## Implementation boundaries
 

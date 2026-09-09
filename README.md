@@ -110,8 +110,25 @@ Host configuration details: [Codex MCP](https://developers.openai.com/codex/mcp)
 Application releases contain Server and Client builds for Windows, macOS, and Linux on x64 and
 arm64, plus `SHA256SUMS.txt`. Downloads are available from the
 [latest release](https://github.com/CodingManFocus/velronRelease/releases/latest).
-GUI Installers are published under immutable `installer-<commit SHA>` tags.
-The `installer-latest` release page links to a complete verified version and do not replace the
+GUI Installers are manually published under versioned `installer-<commit SHA>` tags.
+The `installer-latest` release page links to a complete verified version and does not replace the
 latest Server and Client release.
+
+## Maintainer release process
+
+All GitHub Releases in this repository are uploaded and published manually by the maintainer.
+CI only tests, builds, and saves workflow artifacts; it has read-only repository contents
+permissions and does not create, update, or delete releases or release assets.
+
+For Server and Client, copy all 12 binaries and `SHA256SUMS.txt` from the completed Velron
+source release for the chosen commit. Keep the filenames and record the original source commit
+in the release notes. Upload the complete set to a draft release, verify the files, then publish
+and mark the intended application version as Latest.
+
+For GUI Installers, download the `installer-release-files` artifact from the successful
+`Installer builds` run for the chosen commit. It contains four installers and their checksum
+file. Follow the [manual Installer publishing instructions](installer/README.md#manual-release-publication),
+including the download-page update. Installer releases must not be marked as Latest because
+the installation engines use Latest for Server and Client downloads.
 
 Use is subject to the terms in [LICENSE](LICENSE).

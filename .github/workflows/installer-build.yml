@@ -1,18 +1,18 @@
-name: Installer release
+name: Installer builds
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ['installer/**', 'install.sh', 'install.ps1', '.github/workflows/installer-release.yml']
+    paths: ['installer/**', 'install.sh', 'install.ps1', '.github/workflows/installer-build.yml']
   pull_request:
-    paths: ['installer/**', 'install.sh', 'install.ps1', '.github/workflows/installer-release.yml']
+    paths: ['installer/**', 'install.sh', 'install.ps1', '.github/workflows/installer-build.yml']
 
 permissions:
   contents: read
 
 concurrency:
-  group: installer-release-${{ github.ref }}
+  group: installer-build-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -143,23 +143,31 @@ jobs:
           name: gui-checks-linux
           path: installer/test-results/
 
-  publish:
+  package:
+    name: Prepare manual upload files
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: [windows, macos, linux]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - uses: actions/download-artifact@v4
         with:
           pattern: installer-*
           merge-multiple: true
           path: dist
-      - name: Publish verified immutable installer assets
-        uses: actions/github-script@v7
+      - name: Generate installer checksums locally
+        run: node installer/scripts/prepareReleaseFiles.cjs
+      - name: Save files for manual release upload
+        uses: actions/upload-artifact@v4
         with:
-          script: |
-            const { publishRelease } = require('./installer/scripts/publishRelease.cjs');
-            const url = await publishRelease({ github, context });
-            await core.summary.addLink('Download Velron Installer', url).write();
+          name: installer-release-files
+          path: |
+            dist/Velron-Installer-windows-x64.exe
+            dist/Velron-Installer-windows-arm64.exe
+            dist/Velron-Installer-macos-universal.zip
+            dist/Velron-Installer-linux.tar.gz
+            dist/SHA256SUMS-installers.txt
+          if-no-files-found: error
