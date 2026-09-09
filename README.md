@@ -9,13 +9,13 @@ verifies its SHA-256 checksum, and walks through the initial setup.
 ### Windows (PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/CodingManFocus/velronRelease/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/CodingManFocus/velronInstaller/main/install.ps1 | iex
 ```
 
 ### macOS and Linux
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/CodingManFocus/velronRelease/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/CodingManFocus/velronInstaller/main/install.sh | sh
 ```
 
 Both commands open an interactive terminal wizard. It lets you:
@@ -42,10 +42,10 @@ An internet connection is required.
 
 | Platform | Installer |
 | --- | --- |
-| Windows (Intel / AMD) | [Velron-Installer-windows-x64.exe](https://github.com/CodingManFocus/velronRelease/releases/tag/installer-latest) |
-| Windows (ARM) | [Velron-Installer-windows-arm64.exe](https://github.com/CodingManFocus/velronRelease/releases/tag/installer-latest) |
-| macOS (Apple Silicon / Intel) | [Velron-Installer-macos-universal.zip](https://github.com/CodingManFocus/velronRelease/releases/tag/installer-latest) |
-| Linux | [Velron-Installer-linux.tar.gz](https://github.com/CodingManFocus/velronRelease/releases/tag/installer-latest) |
+| Windows (Intel / AMD) | [Velron-Installer-windows-x64.exe](https://github.com/CodingManFocus/velronInstaller/releases/latest/download/Velron-Installer-windows-x64.exe) |
+| Windows (ARM) | [Velron-Installer-windows-arm64.exe](https://github.com/CodingManFocus/velronInstaller/releases/latest/download/Velron-Installer-windows-arm64.exe) |
+| macOS (Apple Silicon / Intel) | [Velron-Installer-macos-universal.zip](https://github.com/CodingManFocus/velronInstaller/releases/latest/download/Velron-Installer-macos-universal.zip) |
+| Linux | [Velron-Installer-linux.tar.gz](https://github.com/CodingManFocus/velronInstaller/releases/latest/download/Velron-Installer-linux.tar.gz) |
 
 On Windows, open the `.exe`. On macOS, extract the ZIP and open `Velron Installer.app`.
 On Linux, extract the archive and open `Velron-Installer.desktop` (allow launching if your desktop
@@ -54,8 +54,8 @@ Choose folders and settings, review your choices, then follow progress and any r
 inside the window. The GUI does not require an interactive terminal.
 
 The Windows and macOS launchers do not yet have a trusted publisher signature; your OS may ask for
-approval before opening them. [Installer details and source](installer/README.md) and
-[SHA-256 checksums](https://github.com/CodingManFocus/velronRelease/releases/tag/installer-latest)
+approval before opening them. [Installer details and source](https://github.com/CodingManFocus/velronInstaller/tree/main/installer) and
+[SHA-256 checksums](https://github.com/CodingManFocus/velronInstaller/releases/latest/download/SHA256SUMS-installers.txt)
 are available separately.
 
 ## Default locations
@@ -110,25 +110,25 @@ Host configuration details: [Codex MCP](https://developers.openai.com/codex/mcp)
 Application releases contain Server and Client builds for Windows, macOS, and Linux on x64 and
 arm64, plus `SHA256SUMS.txt`. Downloads are available from the
 [latest release](https://github.com/CodingManFocus/velronRelease/releases/latest).
-GUI Installers are manually published under versioned `installer-<commit SHA>` tags.
-The `installer-latest` release page links to a complete verified version and does not replace the
-latest Server and Client release.
+Installer development, installation scripts, builds, and new releases are maintained in
+[velronInstaller](https://github.com/CodingManFocus/velronInstaller). Its Latest release is independent
+of this repository's Latest Server and Client release. Historical Installer releases here are kept
+for existing links; use velronInstaller for current downloads.
 
 ## Maintainer release process
 
-All GitHub Releases in this repository are uploaded and published manually by the maintainer.
-CI only tests, builds, and saves workflow artifacts; it has read-only repository contents
-permissions and does not create, update, or delete releases or release assets.
+All new GitHub Releases in this repository are Server and Client distributions uploaded and
+published manually by the maintainer. This repository has no build or release workflows.
+Installer CI and release publishing run only in velronInstaller, using that repository's own
+`GITHUB_TOKEN`; they do not publish to velronRelease.
 
 For Server and Client, copy all 12 binaries and `SHA256SUMS.txt` from the completed Velron
 source release for the chosen commit. Keep the filenames and record the original source commit
 in the release notes. Upload the complete set to a draft release, verify the files, then publish
 and mark the intended application version as Latest.
 
-For GUI Installers, download the `installer-release-files` artifact from the successful
-`Installer builds` run for the chosen commit. It contains four installers and their checksum
-file. Follow the [manual Installer publishing instructions](installer/README.md#manual-release-publication),
-including the download-page update. Installer releases must not be marked as Latest because
-the installation engines use Latest for Server and Client downloads.
+The root `install.sh` and `install.ps1` files are compatibility entry points for previously copied
+one-line commands. They forward to the scripts maintained in velronInstaller. Make all future
+Installer changes in that repository. Existing Installer releases and tags are retained as history.
 
 Use is subject to the terms in [LICENSE](LICENSE).
