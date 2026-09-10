@@ -9,13 +9,13 @@ verifies its SHA-256 checksum, and walks through the initial setup.
 ### Windows (PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/CodingManFocus/velronInstaller/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/CodingManFocus/velronInstaller/4f2a7538c238805aa5e62853baa98a29d144625a/install.ps1 | iex
 ```
 
 ### macOS and Linux
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/CodingManFocus/velronInstaller/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/CodingManFocus/velronInstaller/4f2a7538c238805aa5e62853baa98a29d144625a/install.sh | sh
 ```
 
 Both commands open an interactive terminal wizard. It lets you:
@@ -128,7 +128,9 @@ in the release notes. Upload the complete set to a draft release, verify the fil
 and mark the intended application version as Latest.
 
 The root `install.sh` and `install.ps1` files are compatibility entry points for previously copied
-one-line commands. They forward to the scripts maintained in velronInstaller. Make all future
-Installer changes in that repository. Existing Installer releases and tags are retained as history.
+one-line commands. They forward to the tested Installer release commit
+`4f2a7538c238805aa5e62853baa98a29d144625a`. When promoting another verified Installer release,
+update that revision in both scripts, the one-line commands above, and VelronWeb's
+`src/components/InstallCommand.tsx` together. Make all future Installer changes in velronInstaller. Existing Installer releases and tags are retained as history.
 
 Use is subject to the terms in [LICENSE](LICENSE).
